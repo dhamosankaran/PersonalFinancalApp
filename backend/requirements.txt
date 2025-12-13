@@ -1,0 +1,49 @@
+# FastAPI and Server
+fastapi==0.109.0  # Web framework for building high-performance APIs
+uvicorn[standard]==0.27.0  # ASGI web server implementation for production
+python-multipart==0.0.6  # Streaming multipart parser, required for file uploads in FastAPI
+
+# Database
+sqlalchemy  # SQL Toolkit and Object Relational Mapper (ORM)
+psycopg2-binary  # PostgreSQL database adapter
+alembic==1.13.1  # Database migration tool for SQLAlchemy
+
+# Data Processing
+pandas  # Powerful data structures for data analysis and manipulation
+polars  # Fast, Rust-based DataFrame library (high-performance alternative to Pandas)
+duckdb  # In-process SQL OLAP database for fast analytical queries
+
+# PDF Processing
+pdfplumber==0.10.3  # Tool to extract text and tables from PDFs with high precision
+PyMuPDF  # High-performance PDF parsing and rendering (fitz)
+pytesseract==0.3.10  # Python wrapper for Google's Tesseract-OCR engine
+Pillow  # Python Imaging Library for image processing (needed for OCR)
+
+# Vector Store and Embeddings
+chromadb==0.4.24  # Open-source embedding database
+sentence-transformers==2.3.1  # Framework for generating sentence and text embeddings
+numpy<2.0.0  # Pin numpy < 2.0 for ChromaDB compatibility
+
+# LangChain and LLM
+# Using compatible 0.1.x versions
+langchain==0.1.20
+langchain-core==0.1.52
+langchain-openai==0.1.6
+langchain-community==0.0.38
+openai>=1.24.0  # Required by langchain-openai 0.1.6
+google-generativeai>=0.5.0  # Google Gemini AI SDK
+
+# Utilities
+python-dotenv==1.0.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+python-dateutil==2.8.2
+
+# Testing
+pytest==7.4.4
+pytest-asyncio==0.23.3
+httpx==0.26.0
+
+# RAG Evaluator (Custom implementation - no external deps)
+# ragas
+# datasets
