@@ -12,6 +12,7 @@ import {
     Wallet,
     TrendingUp,
     Activity,
+    Brain,
 } from 'lucide-react';
 
 const navItems = [
@@ -19,6 +20,7 @@ const navItems = [
     { href: '/upload', label: 'Upload', icon: Upload },
     { href: '/transactions', label: 'Transactions', icon: Receipt },
     { href: '/chat', label: 'AI Chat', icon: MessageSquare },
+    { href: '/agents', label: 'AI Agents', icon: Brain },
     { href: '/analytics', label: 'Analytics', icon: BarChart3 },
     { href: '/metrics', label: 'Metrics', icon: Activity },
 ];

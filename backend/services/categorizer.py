@@ -5,9 +5,9 @@ Uses rule-based matching and optional LLM refinement.
 
 from typing import Optional, Dict, List
 import re
-from openai import OpenAI
 
 from config import settings
+from .llm_factory import llm_factory
 
 
 class Categorizer:
@@ -102,9 +102,13 @@ class Categorizer:
     
     def __init__(self):
         """Initialize the categorizer."""
-        self.client = None
-        if settings.openai_api_key:
-            self.client = OpenAI(api_key=settings.openai_api_key)
+        # LLM client is now obtained from factory
+        pass
+    
+    @property
+    def client(self):
+        """Get raw LLM client from factory."""
+        return llm_factory.get_raw_client()
     
     def categorize(self, merchant: str, description: Optional[str] = None) -> Dict[str, Optional[str]]:
         """
@@ -166,26 +170,68 @@ Description: {description or 'N/A'}
 
 Respond with ONLY the category name, nothing else. If uncertain, respond with "Uncategorized"."""
             
-            response = self.client.chat.completions.create(
-                model="gpt-4o-mini",  # Using mini for cost efficiency
-                messages=[
-                    {"role": "system", "content": "You are a financial transaction categorization expert."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0,
+            category = self._call_llm(
+                system_prompt="You are a financial transaction categorization expert.",
+                user_prompt=prompt,
                 max_tokens=20
             )
             
-            category = response.choices[0].message.content.strip()
-            
-            # Validate the response
-            if category in categories_list:
-                return {"category": category, "subcategory": None}
+            if category:
+                category = category.strip()
+                # Validate the response
+                if category in categories_list:
+                    return {"category": category, "subcategory": None}
             
         except Exception as e:
             print(f"LLM categorization failed: {e}")
         
         return {"category": "Uncategorized", "subcategory": None}
+    
+    def _call_llm(self, system_prompt: str, user_prompt: str, max_tokens: int = 100) -> Optional[str]:
+        """
+        Call the LLM (OpenAI or Gemini) based on current provider.
+        
+        Args:
+            system_prompt: System message for the LLM
+            user_prompt: User message/question
+            max_tokens: Maximum tokens in response
+            
+        Returns:
+            Response text or None if failed
+        """
+        client = self.client
+        if not client:
+            return None
+        
+        provider = llm_factory.get_current_provider()
+        
+        try:
+            if provider == "openai" or hasattr(client, 'chat'):
+                # OpenAI client
+                response = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    temperature=0,
+                    max_tokens=max_tokens
+                )
+                return response.choices[0].message.content
+            else:
+                # Gemini client (GenerativeModel)
+                combined_prompt = f"{system_prompt}\n\n{user_prompt}"
+                response = client.generate_content(
+                    combined_prompt,
+                    generation_config={
+                        "temperature": 0,
+                        "max_output_tokens": max_tokens
+                    }
+                )
+                return response.text
+        except Exception as e:
+            print(f"LLM call failed: {e}")
+            return None
     
     def batch_categorize_merchants(self, merchants: List[str]) -> Dict[str, str]:
         """
@@ -233,17 +279,16 @@ Example format: {{"MERCHANT NAME": "Category", "ANOTHER MERCHANT": "Category"}}
 If a merchant is unclear, use "Uncategorized". Only use the exact category names provided."""
 
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": "You are a financial transaction categorization expert. Respond only with valid JSON."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0,
+            response_text = self._call_llm(
+                system_prompt="You are a financial transaction categorization expert. Respond only with valid JSON.",
+                user_prompt=prompt,
                 max_tokens=2000
             )
             
-            response_text = response.choices[0].message.content.strip()
+            if not response_text:
+                raise Exception("No response from LLM")
+            
+            response_text = response_text.strip()
             
             # Parse JSON response
             import json

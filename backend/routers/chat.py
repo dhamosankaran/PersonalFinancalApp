@@ -63,8 +63,7 @@ async def chat(
     return ChatResponse(
         response=result['answer'],
         sources=result['sources'],
-        conversation_id=assistant_message.id,
-        model_info=result.get('model_info')
+        conversation_id=assistant_message.id
     )
 
 

@@ -22,25 +22,17 @@ class Settings(BaseSettings):
         default="",
         description="OpenAI API key for LLM reasoning"
     )
-    openai_model: str = Field(
-        default="gpt-4o-mini",
-        description="OpenAI model to use"
-    )
     
-    # Google Gemini
+    # Gemini
     gemini_api_key: str = Field(
         default="",
         description="Google Gemini API key for LLM reasoning"
     )
-    gemini_model: str = Field(
-        default="gemini-2.5-flash-lite",
-        description="Gemini model to use"
-    )
     
-    # LLM Provider Settings
-    default_llm_provider: str = Field(
-        default="openai",
-        description="Default LLM provider (openai or gemini)"
+    # LLM Provider Selection
+    llm_provider: str = Field(
+        default="gemini",
+        description="LLM provider to use: 'openai' or 'gemini'"
     )
     
     # Server

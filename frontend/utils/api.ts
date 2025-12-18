@@ -40,7 +40,7 @@ export const uploadFile = async (file: File) => {
     return response.data;
 };
 
-export const uploadMultipleFiles = async (files: File[]) => {
+export const uploadMultipleFiles = async (files: File[], extractionMethod: 'pdfplumber' | 'llm' = 'pdfplumber') => {
     const formData = new FormData();
     files.forEach((file) => {
         formData.append('files', file);
@@ -49,6 +49,9 @@ export const uploadMultipleFiles = async (files: File[]) => {
     const response = await apiClient.post('/api/upload/batch', formData, {
         headers: {
             'Content-Type': 'multipart/form-data',
+        },
+        params: {
+            extraction_method: extractionMethod,
         },
     });
 
@@ -148,45 +151,3 @@ export const clearInsightsCache = async () => {
     return response.data;
 };
 
-// LLM Provider Management (MCP-style model switching)
-export interface ProviderInfo {
-    name: string;
-    available: boolean;
-    active: boolean;
-    model: string;
-}
-
-export interface ProvidersResponse {
-    providers: ProviderInfo[];
-    active_provider: string | null;
-}
-
-export interface SwitchProviderResponse {
-    success: boolean;
-    message: string;
-    active_provider: string;
-    model: string;
-}
-
-export interface ModelInfo {
-    configured: boolean;
-    provider?: string;
-    model?: string;
-    message?: string;
-    available_providers?: ProviderInfo[];
-}
-
-export const getProviders = async (): Promise<ProvidersResponse> => {
-    const response = await apiClient.get('/api/settings/providers');
-    return response.data;
-};
-
-export const switchProvider = async (provider: 'openai' | 'gemini'): Promise<SwitchProviderResponse> => {
-    const response = await apiClient.post('/api/settings/providers/switch', { provider });
-    return response.data;
-};
-
-export const getModelInfo = async (): Promise<ModelInfo> => {
-    const response = await apiClient.get('/api/settings/model-info');
-    return response.data;
-};

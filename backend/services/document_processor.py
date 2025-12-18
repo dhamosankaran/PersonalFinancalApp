@@ -29,17 +29,25 @@ class DocumentProcessor:
         if os.path.exists(self.tesseract_path):
             pytesseract.pytesseract.tesseract_cmd = self.tesseract_path
     
-    async def process_pdf(self, file_path: str) -> List[Dict[str, Any]]:
+    async def process_pdf(self, file_path: str, extraction_method: str = "pdfplumber") -> List[Dict[str, Any]]:
         """
         Process a PDF file and extract transactions.
         
         Args:
             file_path: Path to the PDF file
+            extraction_method: "pdfplumber" (default) or "llm" (Gemini Vision)
             
         Returns:
             List of extracted transactions
         """
-        extraction_method = "unknown"
+        # If LLM extraction requested, use the LLM extractor
+        if extraction_method == "llm":
+            from .llm_extractor import llm_extractor
+            transactions = await llm_extractor.extract_transactions(file_path)
+            return transactions
+        
+        # Otherwise use traditional extraction
+        extraction_method_used = "unknown"
         
         with Timer(
             MetricsCollector.FLOW_DOCUMENT,
@@ -48,17 +56,17 @@ class DocumentProcessor:
         ):
             # Try PDFPlumber first (best for digital PDFs)
             transactions = await self._extract_with_pdfplumber(file_path)
-            extraction_method = "pdfplumber"
+            extraction_method_used = "pdfplumber"
             
             if not transactions or len(transactions) < 3:
                 # Fallback to PyMuPDF
                 transactions = await self._extract_with_pymupdf(file_path)
-                extraction_method = "pymupdf"
+                extraction_method_used = "pymupdf"
             
             if not transactions or len(transactions) < 3:
                 # Last resort: OCR
                 transactions = await self._extract_with_ocr(file_path)
-                extraction_method = "ocr"
+                extraction_method_used = "ocr"
         
         # Record metrics
         metrics_collector.increment_counter(
@@ -67,7 +75,7 @@ class DocumentProcessor:
         )
         metrics_collector.increment_counter(
             MetricsCollector.FLOW_DOCUMENT,
-            f"extraction_method_{extraction_method}"
+            f"extraction_method_{extraction_method_used}"
         )
         metrics_collector.increment_counter(
             MetricsCollector.FLOW_DOCUMENT,
@@ -89,16 +97,26 @@ class DocumentProcessor:
         
         try:
             with pdfplumber.open(file_path) as pdf:
+                # Extract year from FULL document first (fixes year extraction bug)
+                full_text = ""
+                for page in pdf.pages:
+                    text = page.extract_text()
+                    if text:
+                        full_text += text + "\n"
+                
+                # Get the document-level year
+                doc_year = self._extract_year_from_text(full_text)
+                
                 for page in pdf.pages:
                     # Extract tables
                     tables = page.extract_tables()
                     for table in tables:
-                        transactions.extend(self._parse_table(table, filename))
+                        transactions.extend(self._parse_table(table, filename, doc_year))
                     
                     # Also extract text for non-tabular data
                     text = page.extract_text()
                     if text:
-                        transactions.extend(self._parse_text(text, filename))
+                        transactions.extend(self._parse_text(text, filename, doc_year))
         except Exception as e:
             print(f"PDFPlumber extraction failed: {e}")
         
@@ -111,9 +129,15 @@ class DocumentProcessor:
         
         try:
             doc = fitz.open(file_path)
+            # Extract year from full document first
+            full_text = ""
+            for page in doc:
+                full_text += page.get_text() + "\n"
+            doc_year = self._extract_year_from_text(full_text)
+            
             for page in doc:
                 text = page.get_text()
-                transactions.extend(self._parse_text(text, filename))
+                transactions.extend(self._parse_text(text, filename, doc_year))
         except Exception as e:
             print(f"PyMuPDF extraction failed: {e}")
         
@@ -195,10 +219,10 @@ class DocumentProcessor:
         
         return transactions
     
-    def _parse_table(self, table: List[List[str]], source_filename: str = None) -> List[Dict[str, Any]]:
+    def _parse_table(self, table: List[List[str]], source_filename: str = None, doc_year: int = None) -> List[Dict[str, Any]]:
         """Parse a table extracted from PDF."""
         transactions = []
-        inferred_year = self._infer_year_from_filename(source_filename)
+        inferred_year = doc_year if doc_year else self._infer_year_from_filename(source_filename)
         
         for row in table:
             if not row or len(row) < 3:
@@ -236,7 +260,7 @@ class DocumentProcessor:
         
         return transactions
     
-    def _parse_text(self, text: str, source_filename: str = None) -> List[Dict[str, Any]]:
+    def _parse_text(self, text: str, source_filename: str = None, doc_year: int = None) -> List[Dict[str, Any]]:
         """
         Parse unstructured text for transactions.
         Supports multiple credit card statement formats.
@@ -244,13 +268,14 @@ class DocumentProcessor:
         Args:
             text: Raw text from PDF
             source_filename: Original filename for year inference
+            doc_year: Year extracted from full document (preferred)
         """
         transactions = []
         lines = text.split('\n')
         
-        # Extract year from PDF content (e.g., "New balance as of 12/20/25" -> 2025)
-        # This is more reliable than inferring from filename
-        inferred_year = self._extract_year_from_text(text)
+        # Use provided doc_year if available, otherwise extract from this text chunk
+        # doc_year is more reliable as it's extracted from the full document
+        inferred_year = doc_year if doc_year else self._extract_year_from_text(text)
         
         for line in lines:
             line = line.strip()

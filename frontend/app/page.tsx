@@ -65,7 +65,7 @@ export default function DashboardPage() {
           value={`$${Number(totalSpend).toLocaleString('en-US', { minimumFractionDigits: 2 })}`}
           change={periodChange !== 0 ? `${periodChange > 0 ? '+' : ''}${periodChange}%` : undefined}
           trend={periodChange > 0 ? 'up' : periodChange < 0 ? 'down' : undefined}
-          subtitle={periodChange !== 0 ? "vs previous period" : `${monthlyCount} months`}
+          subtitle={periodChange !== 0 ? "vs last month" : `${monthlyCount} months`}
           icon={DollarSign}
           color="primary"
           loading={loadingMonthly}
@@ -115,13 +115,13 @@ export default function DashboardPage() {
               ) : (
                 <TrendingDown className="w-5 h-5 text-green-400" />
               )}
-              <span className="text-sm text-[var(--foreground-secondary)]">This Period</span>
+              <span className="text-sm text-[var(--foreground-secondary)]">Month Over Month</span>
             </div>
             <p className="text-lg font-bold">
               {periodChange >= 0 ? 'Spending Up' : 'Spending Down'}
             </p>
             <p className="text-sm text-[var(--foreground-secondary)]">
-              {Math.abs(periodChange)}% {periodChange >= 0 ? 'increase' : 'decrease'} from previous period
+              {Math.abs(periodChange)}% {periodChange >= 0 ? 'increase' : 'decrease'} from last month
             </p>
           </div>
 

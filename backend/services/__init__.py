@@ -9,7 +9,8 @@ from .analytics import analytics_service
 from .chunking import chunking_service
 from .metrics import metrics_collector, Timer, MetricsCollector
 from .ragas_evaluation import ragas_service
-from .llm_provider import llm_manager, ModelProvider, initialize_providers
+from .llm_factory import llm_factory
+from .llm_extractor import llm_extractor
 
 __all__ = [
     "DocumentProcessor",
@@ -23,7 +24,6 @@ __all__ = [
     "Timer",
     "MetricsCollector",
     "ragas_service",
-    "llm_manager",
-    "ModelProvider", 
-    "initialize_providers",
+    "llm_factory",
+    "llm_extractor",
 ]

@@ -2,30 +2,67 @@
 RAG (Retrieval-Augmented Generation) service.
 Combines vector search with LLM reasoning.
 Instrumented with comprehensive metrics for observability.
-Supports multiple LLM providers via MCP-inspired abstraction.
 """
 
 import time
 from typing import List, Dict, Any, Optional
+from langchain_core.messages import HumanMessage, SystemMessage
 import json
-import logging
 
 from config import settings
 from .vector_store import vector_store
 from .metrics import metrics_collector, Timer, MetricsCollector
-from .llm_provider import llm_manager, initialize_providers, ModelProvider
-
-logger = logging.getLogger(__name__)
+from .llm_factory import llm_factory
+from .tracing import tracing_service
 
 
 class RAGService:
-    """Service for RAG-based question answering with multi-model support."""
+    """Service for RAG-based question answering."""
     
     def __init__(self):
-        """Initialize the RAG service with LLM providers."""
-        # Initialize all configured LLM providers
-        initialize_providers()
-        logger.info(f"RAG Service initialized with providers: {llm_manager.get_available_providers()}")
+        """Initialize the RAG service."""
+        # LLM is now obtained dynamically from factory
+        pass
+    
+    @property
+    def llm(self):
+        """Get the current LLM from factory."""
+        return llm_factory.get_llm(temperature=0)
+    
+    def _is_temporal_query(self, question: str) -> bool:
+        """Detect if query requires temporal ordering (recent, latest, last, etc.)."""
+        temporal_keywords = [
+            'recent', 'latest', 'last', 'newest', 'most recent',
+            'yesterday', 'today', 'this week', 'this month',
+            'past week', 'past month', 'previous'
+        ]
+        question_lower = question.lower()
+        return any(kw in question_lower for kw in temporal_keywords)
+    
+    async def _get_recent_transactions_context(self, user_id: str, limit: int = 10) -> str:
+        """Get context from database ordered by date for temporal queries."""
+        from database import SessionLocal
+        from models.transaction import Transaction
+        from sqlalchemy import desc
+        
+        db = SessionLocal()
+        try:
+            query = db.query(Transaction).order_by(desc(Transaction.transaction_date))
+            if user_id:
+                query = query.filter(Transaction.user_id == user_id)
+            txns = query.limit(limit).all()
+            
+            if not txns:
+                return ""
+            
+            lines = ["MOST RECENT TRANSACTIONS (ordered by date, newest first):"]
+            for t in txns:
+                date_str = t.transaction_date.strftime('%Y-%m-%d') if t.transaction_date else 'Unknown'
+                lines.append(f"- {date_str}: ${t.amount:.2f} at {t.merchant or 'Unknown'} ({t.category or 'Uncategorized'})")
+            
+            return "\n".join(lines)
+        finally:
+            db.close()
     
     async def query(
         self,
@@ -44,72 +81,97 @@ class RAGService:
         Returns:
             Dictionary with answer and sources
         """
-        total_start = time.perf_counter()
-        step_timings = {}
-        
-        # Step 1: Retrieve relevant documents
-        retrieval_start = time.perf_counter()
-        search_results = await vector_store.search(
-            query=question,
+        # Wrap entire query in a trace
+        with tracing_service.trace(
+            name="rag_query",
             user_id=user_id,
-            n_results=n_results
-        )
-        step_timings['retrieval_ms'] = (time.perf_counter() - retrieval_start) * 1000
-        
-        # Step 2: Format retrieved context
-        context_start = time.perf_counter()
-        context = self._format_context(search_results)
-        step_timings['context_formatting_ms'] = (time.perf_counter() - context_start) * 1000
-        
-        # Step 3: Generate answer using LLM
-        if not llm_manager.is_available():
+            input_summary=question
+        ) as trace:
+            total_start = time.perf_counter()
+            step_timings = {}
+            
+            # Check if this is a temporal query (needs date ordering)
+            is_temporal = self._is_temporal_query(question)
+            temporal_context = ""
+            if is_temporal:
+                temporal_context = await self._get_recent_transactions_context(user_id, limit=15)
+            
+            # Step 1: Retrieve relevant documents via vector search
+            with tracing_service.span("retrieval", "retrieval", metadata={"n_results": n_results, "temporal": is_temporal}):
+                retrieval_start = time.perf_counter()
+                search_results = await vector_store.search(
+                    query=question,
+                    user_id=user_id,
+                    n_results=n_results
+                )
+                step_timings['retrieval_ms'] = (time.perf_counter() - retrieval_start) * 1000
+            
+            # Step 2: Format retrieved context
+            context_start = time.perf_counter()
+            context = self._format_context(search_results)
+            
+            # For temporal queries, prepend the date-ordered context
+            if temporal_context:
+                context = temporal_context + "\n\n---\n\nADDITIONAL CONTEXT FROM VECTOR SEARCH:\n" + context
+            
+            step_timings['context_formatting_ms'] = (time.perf_counter() - context_start) * 1000
+            
+            # Step 3: Generate answer using LLM
+            if not self.llm:
+                total_time_ms = (time.perf_counter() - total_start) * 1000
+                self._record_query_metrics(total_time_ms, step_timings, 0, len(context), False)
+                
+                answer = "LLM is not configured. Please set OPENAI_API_KEY or GEMINI_API_KEY."
+                tracing_service.set_output_summary(answer)
+                
+                return {
+                    "answer": answer,
+                    "sources": [],
+                    "context": context,
+                    "metrics": {
+                        "total_time_ms": round(total_time_ms, 2),
+                        **{k: round(v, 2) for k, v in step_timings.items()}
+                    }
+                }
+            
+            # LLM generation with tracing
+            with tracing_service.span("llm_generation", "llm") as llm_span:
+                llm_start = time.perf_counter()
+                answer = await self._generate_answer(question, context)
+                step_timings['llm_generation_ms'] = (time.perf_counter() - llm_start) * 1000
+            
+            # Set output summary for trace
+            tracing_service.set_output_summary(answer)
+            
+            # Step 4: Extract sources
+            sources_start = time.perf_counter()
+            sources = self._extract_sources(search_results)
+            step_timings['source_extraction_ms'] = (time.perf_counter() - sources_start) * 1000
+            
+            # Calculate total time
             total_time_ms = (time.perf_counter() - total_start) * 1000
-            self._record_query_metrics(total_time_ms, step_timings, 0, len(context), False)
+            
+            # Record all metrics
+            self._record_query_metrics(
+                total_time_ms, 
+                step_timings, 
+                len(sources), 
+                len(context),
+                True
+            )
             
             return {
-                "answer": "No LLM is configured. Please set OPENAI_API_KEY or GEMINI_API_KEY in your environment.",
-                "sources": [],
+                "answer": answer,
+                "sources": sources,
                 "context": context,
-                "model_info": None,
                 "metrics": {
                     "total_time_ms": round(total_time_ms, 2),
-                    **{k: round(v, 2) for k, v in step_timings.items()}
+                    **{k: round(v, 2) for k, v in step_timings.items()},
+                    "source_count": len(sources),
+                    "context_length": len(context),
+                    "trace_id": trace.id
                 }
             }
-        
-        llm_start = time.perf_counter()
-        answer, model_info = await self._generate_answer(question, context)
-        step_timings['llm_generation_ms'] = (time.perf_counter() - llm_start) * 1000
-        
-        # Step 4: Extract sources
-        sources_start = time.perf_counter()
-        sources = self._extract_sources(search_results)
-        step_timings['source_extraction_ms'] = (time.perf_counter() - sources_start) * 1000
-        
-        # Calculate total time
-        total_time_ms = (time.perf_counter() - total_start) * 1000
-        
-        # Record all metrics
-        self._record_query_metrics(
-            total_time_ms, 
-            step_timings, 
-            len(sources), 
-            len(context),
-            True
-        )
-        
-        return {
-            "answer": answer,
-            "sources": sources,
-            "context": context,
-            "model_info": model_info,
-            "metrics": {
-                "total_time_ms": round(total_time_ms, 2),
-                **{k: round(v, 2) for k, v in step_timings.items()},
-                "source_count": len(sources),
-                "context_length": len(context)
-            }
-        }
     
     def _record_query_metrics(
         self, 
@@ -180,12 +242,8 @@ class RAGService:
         
         return "\n".join(context_parts)
     
-    async def _generate_answer(self, question: str, context: str) -> tuple:
-        """Generate answer using LLM with retrieved context.
-        
-        Returns:
-            Tuple of (answer_text, model_info_dict)
-        """
+    async def _generate_answer(self, question: str, context: str) -> str:
+        """Generate answer using LLM with retrieved context."""
         
         system_prompt = """You are a helpful financial assistant analyzing personal credit card transactions.
 You have access to transaction data and should provide accurate, helpful insights.
@@ -208,38 +266,50 @@ QUESTION: {question}
 
 Please provide a clear, accurate answer based on the transaction data above."""
         
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=user_prompt)
+        ]
+        
         try:
-            # Use the LLM provider manager for multi-model support
-            response = await llm_manager.generate(system_prompt, user_prompt)
+            response = await self.llm.ainvoke(messages)
             
-            # Record metrics
+            # Estimate tokens (rough approximation)
+            input_text = system_prompt + user_prompt
+            output_text = response.content
+            input_tokens = len(input_text) // 4
+            output_tokens = len(output_text) // 4
+            
+            # Record LLM call for tracing
+            provider = llm_factory.get_current_provider()
+            model_name = llm_factory.get_model_name()
+            tracing_service.record_llm_call(
+                model_name=model_name,
+                provider=provider,
+                input_text=input_text,
+                output_text=output_text,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens
+            )
+            
             metrics_collector.add_histogram(
                 MetricsCollector.FLOW_RAG,
                 "estimated_input_tokens",
-                response.usage.get("prompt_tokens", 0)
+                input_tokens
             )
             metrics_collector.add_histogram(
                 MetricsCollector.FLOW_RAG,
                 "estimated_output_tokens",
-                response.usage.get("completion_tokens", 0)
+                output_tokens
             )
             
-            # Create model info for the response
-            model_info = {
-                "provider": response.provider.value,
-                "model": response.model,
-                "latency_ms": round(response.latency_ms, 2)
-            }
-            
-            return response.content, model_info
-            
+            return response.content
         except Exception as e:
             metrics_collector.record_error(
                 MetricsCollector.FLOW_RAG,
                 "llm_error"
             )
-            logger.error(f"LLM generation error: {e}")
-            return f"Error generating answer: {str(e)}", None
+            return f"Error generating answer: {str(e)}"
     
     def _extract_sources(self, search_results: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Extract source information from search results."""

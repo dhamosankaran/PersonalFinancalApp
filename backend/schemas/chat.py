@@ -41,5 +41,3 @@ class ChatResponse(BaseModel):
     response: str
     sources: List[Dict[str, Any]]
     conversation_id: UUID
-    model_info: Optional[Dict[str, Any]] = None  # Provider and model used
-

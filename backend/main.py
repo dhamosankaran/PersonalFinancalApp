@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import settings
 from database import init_db
-from routers import upload_router, transactions_router, chat_router, analytics_router, settings_router, metrics_router, evaluation_router
+from routers import upload_router, transactions_router, chat_router, analytics_router, settings_router, metrics_router, evaluation_router, agents_router, tracing_router
 
 
 @asynccontextmanager
@@ -24,6 +24,19 @@ async def lifespan(app: FastAPI):
     print("Initializing database...")
     init_db()
     print("Database initialized")
+    
+    # Initialize tracing tables
+    print("Initializing tracing tables...")
+    try:
+        from models.tracing import Trace, Span, EvaluationRun
+        from database import engine, Base
+        # Create tables if they don't exist
+        Trace.__table__.create(engine, checkfirst=True)
+        Span.__table__.create(engine, checkfirst=True)
+        EvaluationRun.__table__.create(engine, checkfirst=True)
+        print("Tracing tables ready")
+    except Exception as e:
+        print(f"Warning: Could not initialize tracing tables: {e}")
     
     print("Initializing embedding service...")
     from services import embedding_service
@@ -67,6 +80,8 @@ app.include_router(analytics_router)
 app.include_router(settings_router)
 app.include_router(metrics_router)
 app.include_router(evaluation_router)
+app.include_router(agents_router)
+app.include_router(tracing_router)
 
 
 @app.get("/")

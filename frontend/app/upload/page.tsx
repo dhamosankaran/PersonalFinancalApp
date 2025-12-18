@@ -12,6 +12,8 @@ import {
     AlertCircle,
     X,
     FolderUp,
+    Sparkles,
+    FileCode,
 } from 'lucide-react';
 import { uploadMultipleFiles, getUploadedDocuments } from '@/utils/api';
 import { format } from 'date-fns';
@@ -29,13 +31,17 @@ interface BatchUploadResult {
     skipped: number;
     failed: number;
     total_transactions: number;
+    extraction_method?: string;
     files: FileResult[];
 }
+
+type ExtractionMethod = 'pdfplumber' | 'llm';
 
 export default function UploadPage() {
     const [isDragging, setIsDragging] = useState(false);
     const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
     const [uploadResult, setUploadResult] = useState<BatchUploadResult | null>(null);
+    const [extractionMethod, setExtractionMethod] = useState<ExtractionMethod>('pdfplumber');
     const queryClient = useQueryClient();
 
     const { data: documents, isLoading } = useQuery({
@@ -44,7 +50,7 @@ export default function UploadPage() {
     });
 
     const uploadMutation = useMutation({
-        mutationFn: uploadMultipleFiles,
+        mutationFn: (files: File[]) => uploadMultipleFiles(files, extractionMethod),
         onSuccess: (data: BatchUploadResult) => {
             setUploadResult(data);
             setSelectedFiles([]);
@@ -181,6 +187,50 @@ export default function UploadPage() {
                     <p className="text-xs text-[var(--foreground-secondary)] mt-4">
                         Maximum file size: 10MB per file • Supports PDF and CSV
                     </p>
+                </div>
+            </div>
+
+            {/* Extraction Method Toggle */}
+            <div className="glass-card p-4">
+                <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-[var(--accent-primary)] bg-opacity-20 flex items-center justify-center">
+                            {extractionMethod === 'llm' ? (
+                                <Sparkles className="w-5 h-5 text-[var(--accent-primary)]" />
+                            ) : (
+                                <FileCode className="w-5 h-5 text-[var(--accent-primary)]" />
+                            )}
+                        </div>
+                        <div>
+                            <p className="font-medium">PDF Extraction Method</p>
+                            <p className="text-sm text-[var(--foreground-secondary)]">
+                                {extractionMethod === 'llm'
+                                    ? 'AI-powered extraction using Gemini Vision (uses API calls)'
+                                    : 'Traditional PDF parser (local, no API costs)'}
+                            </p>
+                        </div>
+                    </div>
+                    <div className="flex rounded-xl bg-[var(--background)] p-1">
+                        <button
+                            onClick={() => setExtractionMethod('pdfplumber')}
+                            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${extractionMethod === 'pdfplumber'
+                                    ? 'bg-[var(--accent-primary)] text-white'
+                                    : 'text-[var(--foreground-secondary)] hover:text-[var(--foreground)]'
+                                }`}
+                        >
+                            PDF Parser
+                        </button>
+                        <button
+                            onClick={() => setExtractionMethod('llm')}
+                            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all flex items-center gap-2 ${extractionMethod === 'llm'
+                                    ? 'bg-[var(--accent-primary)] text-white'
+                                    : 'text-[var(--foreground-secondary)] hover:text-[var(--foreground)]'
+                                }`}
+                        >
+                            <Sparkles className="w-4 h-4" />
+                            AI Extraction
+                        </button>
+                    </div>
                 </div>
             </div>
 

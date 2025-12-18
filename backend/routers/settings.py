@@ -1,47 +1,23 @@
-"""Settings router for diagnostics, configuration, and LLM provider management."""
+"""Settings router for diagnostics and configuration."""
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
+from typing import Dict, Any, List
 from pydantic import BaseModel
-from typing import Dict, Any, List, Optional
 import os
 from pathlib import Path
 
 from database import get_db
 from models import User, Transaction, UploadedDocument, ChatMessage
-from services import vector_store, analytics_service
-from services.llm_provider import llm_manager, ModelProvider, initialize_providers
+from services import vector_store, analytics_service, llm_factory
 from config import settings
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 
-# Pydantic models for LLM provider endpoints
-class ProviderInfo(BaseModel):
-    """Information about an LLM provider."""
-    name: str
-    available: bool
-    active: bool
-    model: str
-
-
-class ProvidersResponse(BaseModel):
-    """Response containing all available providers."""
-    providers: List[ProviderInfo]
-    active_provider: Optional[str]
-
-
-class SetProviderRequest(BaseModel):
-    """Request to set the active LLM provider."""
+class LLMProviderRequest(BaseModel):
+    """Request body for setting LLM provider."""
     provider: str  # "openai" or "gemini"
-
-
-class SetProviderResponse(BaseModel):
-    """Response after setting the provider."""
-    success: bool
-    message: str
-    active_provider: str
-    model: str
 
 
 @router.get("/diagnostics")
@@ -59,6 +35,9 @@ async def get_diagnostics(db: Session = Depends(get_db)) -> Dict[str, Any]:
     
     # Vector store stats
     vector_stats = vector_store.get_stats()
+    
+    # LLM provider stats
+    llm_status = llm_factory.get_provider_status()
     
     # Statements directory info
     statements_dir = settings.statements_directory
@@ -87,7 +66,9 @@ async def get_diagnostics(db: Session = Depends(get_db)) -> Dict[str, Any]:
         "configuration": {
             "embedding_model": settings.embedding_model,
             "chroma_path": settings.chroma_persist_directory,
-            "openai_configured": bool(settings.openai_api_key)
+            "openai_configured": bool(settings.openai_api_key),
+            "gemini_configured": bool(settings.gemini_api_key),
+            "current_llm_provider": llm_status["current_provider"]
         }
     }
 
@@ -260,107 +241,129 @@ async def reprocess_documents(
         }
 
 
-# ============================================================================
-# LLM Provider Management (MCP-inspired model switching)
-# ============================================================================
-
-@router.get("/providers", response_model=ProvidersResponse)
-async def get_providers():
-    """
-    Get list of available LLM providers and their status.
+@router.get("/embedding-comparison")
+async def get_embedding_comparison_results() -> Dict[str, Any]:
+    """Get pre-computed embedding comparison results."""
+    import json
     
-    Returns information about which providers are configured
-    and which one is currently active. This enables MCP-style
-    model switching in the application.
-    """
-    # Ensure providers are initialized
-    if not llm_manager.get_available_providers():
-        initialize_providers()
+    results_path = Path(__file__).parent.parent / "data" / "embedding_comparison_results.json"
     
-    providers = llm_manager.get_available_providers()
-    active = llm_manager.get_active_provider_name()
-    
-    return ProvidersResponse(
-        providers=[ProviderInfo(**p) for p in providers],
-        active_provider=active
-    )
-
-
-@router.post("/providers/switch", response_model=SetProviderResponse)
-async def switch_provider(request: SetProviderRequest):
-    """
-    Switch the active LLM provider.
-    
-    Allows switching between OpenAI and Gemini models on the fly.
-    The change takes effect immediately for subsequent chat requests.
-    
-    Example:
-        POST /api/settings/providers/switch
-        {"provider": "gemini"}
-    """
-    try:
-        provider = ModelProvider(request.provider.lower())
-    except ValueError:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid provider: {request.provider}. Valid options: openai, gemini"
-        )
-    
-    # Check if provider is available
-    providers = llm_manager.get_available_providers()
-    provider_info = next((p for p in providers if p["name"] == provider.value), None)
-    
-    if not provider_info:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Provider {request.provider} is not registered. Check your .env configuration."
-        )
-    
-    if not provider_info["available"]:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Provider {request.provider} is not available. Please check your API key configuration (OPENAI_API_KEY or GEMINI_API_KEY)."
-        )
-    
-    # Switch the provider
-    success = llm_manager.set_active_provider(provider)
-    
-    if not success:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to switch to provider {request.provider}"
-        )
-    
-    # Get updated provider info
-    active_provider = llm_manager.get_active_provider()
-    
-    return SetProviderResponse(
-        success=True,
-        message=f"Successfully switched to {provider.value}",
-        active_provider=provider.value,
-        model=getattr(active_provider, 'model', 'unknown')
-    )
-
-
-@router.get("/model-info")
-async def get_model_info() -> Dict[str, Any]:
-    """
-    Get detailed information about the current active model.
-    
-    Returns the provider name, model identifier, and configuration details.
-    Useful for displaying the current LLM status in the UI.
-    """
-    provider = llm_manager.get_active_provider()
-    
-    if not provider:
+    if not results_path.exists():
         return {
-            "configured": False,
-            "message": "No LLM provider is configured. Please set OPENAI_API_KEY or GEMINI_API_KEY in your .env file."
+            "available": False,
+            "message": "No comparison results available. Run the comparison test first.",
+            "results": None
         }
     
-    return {
-        "configured": True,
-        "provider": provider.provider_name.value,
-        "model": getattr(provider, 'model', 'unknown'),
-        "available_providers": llm_manager.get_available_providers()
-    }
+    try:
+        with open(results_path, 'r') as f:
+            data = json.load(f)
+        return {
+            "available": True,
+            "timestamp": data.get("timestamp"),
+            "test_config": data.get("test_config"),
+            "results": data.get("results")
+        }
+    except Exception as e:
+        return {
+            "available": False,
+            "error": str(e),
+            "results": None
+        }
+
+
+@router.post("/embedding-comparison/run")
+async def run_embedding_comparison(
+    max_transactions: int = 50,
+    providers: List[str] = None
+) -> Dict[str, Any]:
+    """Run embedding comparison test (may take a few minutes)."""
+    import asyncio
+    import subprocess
+    import json
+    
+    # Run the comparison script
+    try:
+        result = subprocess.run(
+            ["python", "test_embedding_comparison.py"],
+            cwd=str(Path(__file__).parent.parent),
+            capture_output=True,
+            text=True,
+            timeout=300  # 5 minute timeout
+        )
+        
+        if result.returncode != 0:
+            return {
+                "success": False,
+                "error": result.stderr,
+                "output": result.stdout
+            }
+        
+        # Read results file
+        results_path = Path(__file__).parent.parent / "data" / "embedding_comparison_results.json"
+        if results_path.exists():
+            with open(results_path, 'r') as f:
+                data = json.load(f)
+            return {
+                "success": True,
+                "timestamp": data.get("timestamp"),
+                "results": data.get("results"),
+                "output": result.stdout[-1000:]  # Last 1000 chars of output
+            }
+        
+        return {
+            "success": True,
+            "output": result.stdout,
+            "message": "Comparison completed but no results file found"
+        }
+        
+    except subprocess.TimeoutExpired:
+        return {
+            "success": False,
+            "error": "Comparison test timed out (5 minute limit)"
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+@router.get("/llm-provider")
+async def get_llm_provider() -> Dict[str, Any]:
+    """Get current LLM provider and status for all providers."""
+    return llm_factory.get_provider_status()
+
+
+@router.post("/llm-provider")
+async def set_llm_provider(request: LLMProviderRequest) -> Dict[str, Any]:
+    """
+    Set the LLM provider.
+    
+    Args:
+        request: Contains 'provider' field with value "openai" or "gemini"
+        
+    Returns:
+        Success status and updated provider info
+    """
+    provider = request.provider.lower()
+    
+    if provider not in ("openai", "gemini"):
+        return {
+            "success": False,
+            "error": f"Invalid provider: {provider}. Must be 'openai' or 'gemini'"
+        }
+    
+    success = llm_factory.set_provider(provider)
+    
+    if success:
+        return {
+            "success": True,
+            "message": f"LLM provider set to {provider}",
+            **llm_factory.get_provider_status()
+        }
+    else:
+        return {
+            "success": False,
+            "error": f"Failed to set provider to {provider}"
+        }

@@ -115,16 +115,20 @@ async def evaluate_live_query(request: LiveQueryEvaluationRequest) -> Dict[str, 
         n_results=10
     )
     
-    # Extract contexts from sources
-    contexts = [
-        source.get("text", "") 
-        for source in rag_result.get("sources", [])
-        if source.get("text")
-    ]
+    # Extract contexts - use the FULL context that was passed to the LLM
+    # This includes temporal context + vector search results
+    contexts = []
     
-    # If no contexts extracted, use the context string
-    if not contexts and rag_result.get("context"):
+    # First, use the full context string if available (includes temporal data)
+    if rag_result.get("context"):
         contexts = [rag_result["context"]]
+    else:
+        # Fall back to source texts if no full context
+        contexts = [
+            source.get("text", "") 
+            for source in rag_result.get("sources", [])
+            if source.get("text")
+        ]
     
     # Evaluate with RAGAS if available
     evaluation = None
@@ -214,3 +218,79 @@ async def get_metrics_explanation() -> Dict[str, Any]:
             "poor": "Score < 0.5: Poor quality, significant issues"
         }
     }
+
+
+# ========== Test Suite Endpoints ==========
+
+@router.get("/test-suite")
+async def get_test_suite() -> Dict[str, Any]:
+    """
+    Get available test cases for evaluation.
+    """
+    from services.evaluation_suite import evaluation_suite
+    return {
+        "test_cases": evaluation_suite.get_test_cases(),
+        "count": len(evaluation_suite.get_test_cases())
+    }
+
+
+@router.post("/test-suite/run")
+async def run_test_suite(request: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Run the evaluation test suite.
+    
+    Args:
+        request: Optional JSON body with test_case_ids list.
+                If not provided, runs all test cases.
+    
+    Returns:
+        Suite results with pass/fail status and RAGAS scores for each test.
+    """
+    from services.evaluation_suite import evaluation_suite
+    
+    test_case_ids = None
+    if request and isinstance(request, dict):
+        test_case_ids = request.get("test_case_ids")
+    
+    result = await evaluation_suite.run_suite(test_case_ids)
+    return result.to_dict()
+
+
+@router.get("/test-suite/history")
+async def get_test_suite_history(limit: int = 10) -> Dict[str, Any]:
+    """
+    Get recent test suite run history.
+    """
+    from services.evaluation_suite import evaluation_suite
+    return {
+        "runs": evaluation_suite.get_run_history(limit),
+        "count": len(evaluation_suite.get_run_history(limit))
+    }
+
+
+@router.get("/test-suite/baseline")
+async def get_baseline_scores() -> Dict[str, Any]:
+    """
+    Get baseline scores for regression detection.
+    """
+    from services.evaluation_suite import evaluation_suite
+    return {
+        "baseline": evaluation_suite.get_baseline()
+    }
+
+
+@router.post("/test-suite/baseline")
+async def set_baseline_scores(scores: Dict[str, float]) -> Dict[str, Any]:
+    """
+    Set baseline scores for regression detection.
+    
+    Args:
+        scores: Dictionary with score names and threshold values.
+    """
+    from services.evaluation_suite import evaluation_suite
+    evaluation_suite.set_baseline(scores)
+    return {
+        "message": "Baseline scores updated",
+        "baseline": evaluation_suite.get_baseline()
+    }
+

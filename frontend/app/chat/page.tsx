@@ -12,20 +12,14 @@ import {
     ChevronDown,
     MessageSquare,
     Loader2,
-    Settings,
 } from 'lucide-react';
-import { sendChatMessage, getChatHistory, clearChatHistory, getProviders, type ProvidersResponse } from '@/utils/api';
+import { sendChatMessage, getChatHistory, clearChatHistory } from '@/utils/api';
 
 interface Message {
     id: string;
     role: 'user' | 'assistant';
     content: string;
     sources?: any[];
-    model_info?: {
-        provider: string;
-        model: string;
-        latency_ms?: number;
-    };
     created_at: string;
 }
 
@@ -49,13 +43,6 @@ export default function ChatPage() {
         queryKey: ['chatHistory'],
         queryFn: getChatHistory,
     });
-
-    const { data: providersData } = useQuery({
-        queryKey: ['providers'],
-        queryFn: getProviders,
-    });
-
-    const activeProvider = providersData?.providers.find(p => p.active);
 
     const chatMutation = useMutation({
         mutationFn: sendChatMessage,
@@ -113,21 +100,9 @@ export default function ChatPage() {
             <div className="flex items-center justify-between pb-4 border-b border-[var(--glass-border)]">
                 <div>
                     <h1 className="text-3xl font-bold gradient-text">AI Financial Advisor</h1>
-                    <div className="flex items-center gap-2 mt-1">
-                        <p className="text-[var(--foreground-secondary)]">
-                            Ask questions about your spending and get intelligent insights
-                        </p>
-                        {activeProvider && (
-                            <a
-                                href="/settings"
-                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-[var(--accent)]/20 text-[var(--accent)] hover:bg-[var(--accent)]/30 transition-colors"
-                                title="Click to change model"
-                            >
-                                <Settings className="w-3 h-3" />
-                                {activeProvider.name.toUpperCase()}: {activeProvider.model}
-                            </a>
-                        )}
-                    </div>
+                    <p className="text-[var(--foreground-secondary)] mt-1">
+                        Ask questions about your spending and get intelligent insights
+                    </p>
                 </div>
                 <button
                     onClick={() => clearMutation.mutate()}

@@ -15,7 +15,12 @@ import {
     Zap,
     TrendingUp,
     Server,
+    Layers,
+    ClipboardList,
+    BarChart3,
 } from 'lucide-react';
+import { TracesSection } from '@/components/observability/TracesSection';
+import { EvalSuiteSection } from '@/components/observability/EvalSuiteSection';
 
 interface FlowMetrics {
     total_requests: number;
@@ -68,6 +73,8 @@ const flowLabels: Record<string, string> = {
     api: 'API',
 };
 
+type TabType = 'metrics' | 'traces' | 'eval-suite';
+
 export default function MetricsPage() {
     const [metrics, setMetrics] = useState<MetricsSummary | null>(null);
     const [loading, setLoading] = useState(true);
@@ -75,6 +82,7 @@ export default function MetricsPage() {
     const [benchmarkResult, setBenchmarkResult] = useState<BenchmarkResult | null>(null);
     const [benchmarking, setBenchmarking] = useState(false);
     const [autoRefresh, setAutoRefresh] = useState(false);
+    const [activeTab, setActiveTab] = useState<TabType>('metrics');
 
     const fetchMetrics = async () => {
         try {
@@ -164,250 +172,296 @@ export default function MetricsPage() {
             {/* Header */}
             <div className="flex items-center justify-between">
                 <div>
-                    <h1 className="text-3xl font-bold gradient-text">System Metrics</h1>
+                    <h1 className="text-3xl font-bold gradient-text">Observability & Eval</h1>
                     <p className="text-[var(--foreground-secondary)] mt-1">
-                        Monitor performance and observability across all flows
+                        Monitor performance, traces, and RAG quality
                     </p>
                 </div>
                 <div className="flex items-center gap-4">
-                    <label className="flex items-center gap-2 cursor-pointer">
-                        <input
-                            type="checkbox"
-                            checked={autoRefresh}
-                            onChange={(e) => setAutoRefresh(e.target.checked)}
-                            className="w-4 h-4 rounded"
-                        />
-                        <span className="text-sm">Auto-refresh (5s)</span>
-                    </label>
-                    <button
-                        onClick={fetchMetrics}
-                        className="btn-secondary flex items-center gap-2"
-                    >
-                        <RefreshCw className="w-4 h-4" />
-                        Refresh
-                    </button>
+                    {activeTab === 'metrics' && (
+                        <>
+                            <label className="flex items-center gap-2 cursor-pointer">
+                                <input
+                                    type="checkbox"
+                                    checked={autoRefresh}
+                                    onChange={(e) => setAutoRefresh(e.target.checked)}
+                                    className="w-4 h-4 rounded"
+                                />
+                                <span className="text-sm">Auto-refresh (5s)</span>
+                            </label>
+                            <button
+                                onClick={fetchMetrics}
+                                className="btn-secondary flex items-center gap-2"
+                            >
+                                <RefreshCw className="w-4 h-4" />
+                                Refresh
+                            </button>
+                        </>
+                    )}
                 </div>
             </div>
 
-            {/* Summary Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                <div className="glass-card p-4">
-                    <div className="flex items-center gap-3">
-                        <div className="p-3 rounded-xl bg-gradient-to-br from-blue-500/20 to-blue-600/20">
-                            <Clock className="w-6 h-6 text-blue-400" />
-                        </div>
-                        <div>
-                            <p className="text-sm text-[var(--foreground-secondary)]">Uptime</p>
-                            <p className="text-xl font-bold">
-                                {formatUptime(metrics?.summary.uptime_seconds || 0)}
-                            </p>
-                        </div>
-                    </div>
-                </div>
-
-                <div className="glass-card p-4">
-                    <div className="flex items-center gap-3">
-                        <div className="p-3 rounded-xl bg-gradient-to-br from-green-500/20 to-green-600/20">
-                            <Activity className="w-6 h-6 text-green-400" />
-                        </div>
-                        <div>
-                            <p className="text-sm text-[var(--foreground-secondary)]">Total Requests</p>
-                            <p className="text-xl font-bold">
-                                {metrics?.summary.total_requests.toLocaleString() || 0}
-                            </p>
-                        </div>
-                    </div>
-                </div>
-
-                <div className="glass-card p-4">
-                    <div className="flex items-center gap-3">
-                        <div className="p-3 rounded-xl bg-gradient-to-br from-red-500/20 to-red-600/20">
-                            <AlertCircle className="w-6 h-6 text-red-400" />
-                        </div>
-                        <div>
-                            <p className="text-sm text-[var(--foreground-secondary)]">Error Rate</p>
-                            <p className="text-xl font-bold">
-                                {((metrics?.summary.error_rate || 0) * 100).toFixed(2)}%
-                            </p>
-                        </div>
-                    </div>
-                </div>
-
-                <div className="glass-card p-4">
-                    <div className="flex items-center gap-3">
-                        <div className="p-3 rounded-xl bg-gradient-to-br from-purple-500/20 to-purple-600/20">
-                            <CheckCircle className="w-6 h-6 text-purple-400" />
-                        </div>
-                        <div>
-                            <p className="text-sm text-[var(--foreground-secondary)]">Status</p>
-                            <p className="text-xl font-bold text-green-400">Healthy</p>
-                        </div>
-                    </div>
-                </div>
+            {/* Tab Navigation */}
+            <div className="flex gap-2 border-b border-[var(--glass-border)]">
+                <button
+                    onClick={() => setActiveTab('metrics')}
+                    className={`flex items-center gap-2 px-4 py-3 border-b-2 transition-colors ${activeTab === 'metrics'
+                        ? 'border-[var(--accent-primary)] text-[var(--accent-primary)]'
+                        : 'border-transparent text-[var(--foreground-secondary)] hover:text-[var(--foreground-primary)]'
+                        }`}
+                >
+                    <BarChart3 className="w-4 h-4" />
+                    Performance
+                </button>
+                <button
+                    onClick={() => setActiveTab('traces')}
+                    className={`flex items-center gap-2 px-4 py-3 border-b-2 transition-colors ${activeTab === 'traces'
+                        ? 'border-[var(--accent-primary)] text-[var(--accent-primary)]'
+                        : 'border-transparent text-[var(--foreground-secondary)] hover:text-[var(--foreground-primary)]'
+                        }`}
+                >
+                    <Layers className="w-4 h-4" />
+                    Traces
+                </button>
+                <button
+                    onClick={() => setActiveTab('eval-suite')}
+                    className={`flex items-center gap-2 px-4 py-3 border-b-2 transition-colors ${activeTab === 'eval-suite'
+                        ? 'border-[var(--accent-primary)] text-[var(--accent-primary)]'
+                        : 'border-transparent text-[var(--foreground-secondary)] hover:text-[var(--foreground-primary)]'
+                        }`}
+                >
+                    <ClipboardList className="w-4 h-4" />
+                    Eval Suite
+                </button>
             </div>
 
-            {/* Flow Metrics */}
-            <div className="glass-card p-6">
-                <h2 className="text-xl font-bold mb-4">Flow Performance</h2>
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                    {metrics?.flows &&
-                        Object.entries(metrics.flows)
-                            .filter(([_, data]) => data.total_requests > 0)
-                            .map(([flowName, flowData]) => {
-                                const Icon = flowIcons[flowName] || Activity;
-                                const label = flowLabels[flowName] || flowName;
+            {/* Tab Content */}
+            {activeTab === 'traces' && <TracesSection />}
+            {activeTab === 'eval-suite' && <EvalSuiteSection />}
 
-                                return (
-                                    <div key={flowName} className="bg-[var(--background-tertiary)] rounded-xl p-4">
-                                        <div className="flex items-center gap-3 mb-4">
-                                            <div className="p-2 rounded-lg bg-[var(--accent-primary)]/20">
-                                                <Icon className="w-5 h-5 text-[var(--accent-primary)]" />
-                                            </div>
-                                            <div>
-                                                <h3 className="font-semibold">{label}</h3>
-                                                <p className="text-sm text-[var(--foreground-secondary)]">
-                                                    {flowData.total_requests} requests
-                                                </p>
-                                            </div>
-                                        </div>
+            {activeTab === 'metrics' && (
+                <>
+                    {/* Summary Cards */}
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                        <div className="glass-card p-4">
+                            <div className="flex items-center gap-3">
+                                <div className="p-3 rounded-xl bg-gradient-to-br from-blue-500/20 to-blue-600/20">
+                                    <Clock className="w-6 h-6 text-blue-400" />
+                                </div>
+                                <div>
+                                    <p className="text-sm text-[var(--foreground-secondary)]">Uptime</p>
+                                    <p className="text-xl font-bold">
+                                        {formatUptime(metrics?.summary.uptime_seconds || 0)}
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
 
-                                        <div className="grid grid-cols-3 gap-2 text-sm">
-                                            <div>
-                                                <p className="text-[var(--foreground-secondary)]">Avg</p>
-                                                <p className="font-mono font-bold text-green-400">
-                                                    {formatLatency(flowData.avg_latency_ms)}
-                                                </p>
-                                            </div>
-                                            <div>
-                                                <p className="text-[var(--foreground-secondary)]">P95</p>
-                                                <p className="font-mono font-bold text-yellow-400">
-                                                    {formatLatency(flowData.p95_latency_ms)}
-                                                </p>
-                                            </div>
-                                            <div>
-                                                <p className="text-[var(--foreground-secondary)]">P99</p>
-                                                <p className="font-mono font-bold text-orange-400">
-                                                    {formatLatency(flowData.p99_latency_ms)}
-                                                </p>
-                                            </div>
-                                        </div>
+                        <div className="glass-card p-4">
+                            <div className="flex items-center gap-3">
+                                <div className="p-3 rounded-xl bg-gradient-to-br from-green-500/20 to-green-600/20">
+                                    <Activity className="w-6 h-6 text-green-400" />
+                                </div>
+                                <div>
+                                    <p className="text-sm text-[var(--foreground-secondary)]">Total Requests</p>
+                                    <p className="text-xl font-bold">
+                                        {metrics?.summary.total_requests.toLocaleString() || 0}
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
 
-                                        {flowData.error_rate > 0 && (
-                                            <div className="mt-2 text-sm text-red-400">
-                                                Error rate: {(flowData.error_rate * 100).toFixed(2)}%
-                                            </div>
-                                        )}
+                        <div className="glass-card p-4">
+                            <div className="flex items-center gap-3">
+                                <div className="p-3 rounded-xl bg-gradient-to-br from-red-500/20 to-red-600/20">
+                                    <AlertCircle className="w-6 h-6 text-red-400" />
+                                </div>
+                                <div>
+                                    <p className="text-sm text-[var(--foreground-secondary)]">Error Rate</p>
+                                    <p className="text-xl font-bold">
+                                        {((metrics?.summary.error_rate || 0) * 100).toFixed(2)}%
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
 
-                                        {/* Counters */}
-                                        {Object.keys(flowData.counters).length > 0 && (
-                                            <div className="mt-3 pt-3 border-t border-[var(--glass-border)]">
-                                                <div className="grid grid-cols-2 gap-2 text-xs">
-                                                    {Object.entries(flowData.counters).slice(0, 4).map(([key, value]) => (
-                                                        <div key={key} className="flex justify-between">
-                                                            <span className="text-[var(--foreground-secondary)]">
-                                                                {key.replace(/_/g, ' ')}
-                                                            </span>
-                                                            <span className="font-mono">{value}</span>
+                        <div className="glass-card p-4">
+                            <div className="flex items-center gap-3">
+                                <div className="p-3 rounded-xl bg-gradient-to-br from-purple-500/20 to-purple-600/20">
+                                    <CheckCircle className="w-6 h-6 text-purple-400" />
+                                </div>
+                                <div>
+                                    <p className="text-sm text-[var(--foreground-secondary)]">Status</p>
+                                    <p className="text-xl font-bold text-green-400">Healthy</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Flow Metrics */}
+                    <div className="glass-card p-6">
+                        <h2 className="text-xl font-bold mb-4">Flow Performance</h2>
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                            {metrics?.flows &&
+                                Object.entries(metrics.flows)
+                                    .filter(([_, data]) => data.total_requests > 0)
+                                    .map(([flowName, flowData]) => {
+                                        const Icon = flowIcons[flowName] || Activity;
+                                        const label = flowLabels[flowName] || flowName;
+
+                                        return (
+                                            <div key={flowName} className="bg-[var(--background-tertiary)] rounded-xl p-4">
+                                                <div className="flex items-center gap-3 mb-4">
+                                                    <div className="p-2 rounded-lg bg-[var(--accent-primary)]/20">
+                                                        <Icon className="w-5 h-5 text-[var(--accent-primary)]" />
+                                                    </div>
+                                                    <div>
+                                                        <h3 className="font-semibold">{label}</h3>
+                                                        <p className="text-sm text-[var(--foreground-secondary)]">
+                                                            {flowData.total_requests} requests
+                                                        </p>
+                                                    </div>
+                                                </div>
+
+                                                <div className="grid grid-cols-3 gap-2 text-sm">
+                                                    <div>
+                                                        <p className="text-[var(--foreground-secondary)]">Avg</p>
+                                                        <p className="font-mono font-bold text-green-400">
+                                                            {formatLatency(flowData.avg_latency_ms)}
+                                                        </p>
+                                                    </div>
+                                                    <div>
+                                                        <p className="text-[var(--foreground-secondary)]">P95</p>
+                                                        <p className="font-mono font-bold text-yellow-400">
+                                                            {formatLatency(flowData.p95_latency_ms)}
+                                                        </p>
+                                                    </div>
+                                                    <div>
+                                                        <p className="text-[var(--foreground-secondary)]">P99</p>
+                                                        <p className="font-mono font-bold text-orange-400">
+                                                            {formatLatency(flowData.p99_latency_ms)}
+                                                        </p>
+                                                    </div>
+                                                </div>
+
+                                                {flowData.error_rate > 0 && (
+                                                    <div className="mt-2 text-sm text-red-400">
+                                                        Error rate: {(flowData.error_rate * 100).toFixed(2)}%
+                                                    </div>
+                                                )}
+
+                                                {/* Counters */}
+                                                {Object.keys(flowData.counters).length > 0 && (
+                                                    <div className="mt-3 pt-3 border-t border-[var(--glass-border)]">
+                                                        <div className="grid grid-cols-2 gap-2 text-xs">
+                                                            {Object.entries(flowData.counters).slice(0, 4).map(([key, value]) => (
+                                                                <div key={key} className="flex justify-between">
+                                                                    <span className="text-[var(--foreground-secondary)]">
+                                                                        {key.replace(/_/g, ' ')}
+                                                                    </span>
+                                                                    <span className="font-mono">{value}</span>
+                                                                </div>
+                                                            ))}
                                                         </div>
-                                                    ))}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        );
+                                    })}
+
+                            {(!metrics?.flows ||
+                                Object.values(metrics.flows).every((f) => f.total_requests === 0)) && (
+                                    <div className="col-span-2 text-center py-8 text-[var(--foreground-secondary)]">
+                                        <Activity className="w-12 h-12 mx-auto mb-3 opacity-50" />
+                                        <p>No metrics collected yet. Start using the application to see data.</p>
+                                    </div>
+                                )}
+                        </div>
+                    </div>
+
+                    {/* Benchmark Section */}
+                    <div className="glass-card p-6">
+                        <div className="flex items-center justify-between mb-4">
+                            <h2 className="text-xl font-bold">Run Benchmark</h2>
+                            <button
+                                onClick={runBenchmark}
+                                disabled={benchmarking}
+                                className="btn-primary flex items-center gap-2"
+                            >
+                                {benchmarking ? (
+                                    <>
+                                        <RefreshCw className="w-4 h-4 animate-spin" />
+                                        Running...
+                                    </>
+                                ) : (
+                                    <>
+                                        <Play className="w-4 h-4" />
+                                        Run Benchmark
+                                    </>
+                                )}
+                            </button>
+                        </div>
+
+                        <p className="text-sm text-[var(--foreground-secondary)] mb-4">
+                            Run a sample RAG query to measure current performance.
+                        </p>
+
+                        {benchmarkResult && (
+                            <div
+                                className={`rounded-xl p-4 ${benchmarkResult.status === 'success'
+                                    ? 'bg-green-500/10 border border-green-500/30'
+                                    : 'bg-red-500/10 border border-red-500/30'
+                                    }`}
+                            >
+                                {benchmarkResult.status === 'success' ? (
+                                    <div className="space-y-2">
+                                        <div className="flex items-center gap-2 text-green-400">
+                                            <CheckCircle className="w-5 h-5" />
+                                            <span className="font-semibold">{benchmarkResult.message}</span>
+                                        </div>
+                                        {benchmarkResult.metrics && (
+                                            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4 text-sm">
+                                                <div>
+                                                    <p className="text-[var(--foreground-secondary)]">Total Time</p>
+                                                    <p className="font-mono font-bold">
+                                                        {benchmarkResult.metrics.total_time_ms?.toFixed(2)}ms
+                                                    </p>
+                                                </div>
+                                                <div>
+                                                    <p className="text-[var(--foreground-secondary)]">Retrieval</p>
+                                                    <p className="font-mono font-bold">
+                                                        {benchmarkResult.metrics.retrieval_ms?.toFixed(2)}ms
+                                                    </p>
+                                                </div>
+                                                <div>
+                                                    <p className="text-[var(--foreground-secondary)]">LLM Generation</p>
+                                                    <p className="font-mono font-bold">
+                                                        {benchmarkResult.metrics.llm_generation_ms?.toFixed(2)}ms
+                                                    </p>
+                                                </div>
+                                                <div>
+                                                    <p className="text-[var(--foreground-secondary)]">Sources</p>
+                                                    <p className="font-mono font-bold">
+                                                        {benchmarkResult.metrics.source_count}
+                                                    </p>
                                                 </div>
                                             </div>
                                         )}
                                     </div>
-                                );
-                            })}
-
-                    {(!metrics?.flows ||
-                        Object.values(metrics.flows).every((f) => f.total_requests === 0)) && (
-                            <div className="col-span-2 text-center py-8 text-[var(--foreground-secondary)]">
-                                <Activity className="w-12 h-12 mx-auto mb-3 opacity-50" />
-                                <p>No metrics collected yet. Start using the application to see data.</p>
-                            </div>
-                        )}
-                </div>
-            </div>
-
-            {/* Benchmark Section */}
-            <div className="glass-card p-6">
-                <div className="flex items-center justify-between mb-4">
-                    <h2 className="text-xl font-bold">Run Benchmark</h2>
-                    <button
-                        onClick={runBenchmark}
-                        disabled={benchmarking}
-                        className="btn-primary flex items-center gap-2"
-                    >
-                        {benchmarking ? (
-                            <>
-                                <RefreshCw className="w-4 h-4 animate-spin" />
-                                Running...
-                            </>
-                        ) : (
-                            <>
-                                <Play className="w-4 h-4" />
-                                Run Benchmark
-                            </>
-                        )}
-                    </button>
-                </div>
-
-                <p className="text-sm text-[var(--foreground-secondary)] mb-4">
-                    Run a sample RAG query to measure current performance.
-                </p>
-
-                {benchmarkResult && (
-                    <div
-                        className={`rounded-xl p-4 ${benchmarkResult.status === 'success'
-                            ? 'bg-green-500/10 border border-green-500/30'
-                            : 'bg-red-500/10 border border-red-500/30'
-                            }`}
-                    >
-                        {benchmarkResult.status === 'success' ? (
-                            <div className="space-y-2">
-                                <div className="flex items-center gap-2 text-green-400">
-                                    <CheckCircle className="w-5 h-5" />
-                                    <span className="font-semibold">{benchmarkResult.message}</span>
-                                </div>
-                                {benchmarkResult.metrics && (
-                                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4 text-sm">
-                                        <div>
-                                            <p className="text-[var(--foreground-secondary)]">Total Time</p>
-                                            <p className="font-mono font-bold">
-                                                {benchmarkResult.metrics.total_time_ms?.toFixed(2)}ms
-                                            </p>
-                                        </div>
-                                        <div>
-                                            <p className="text-[var(--foreground-secondary)]">Retrieval</p>
-                                            <p className="font-mono font-bold">
-                                                {benchmarkResult.metrics.retrieval_ms?.toFixed(2)}ms
-                                            </p>
-                                        </div>
-                                        <div>
-                                            <p className="text-[var(--foreground-secondary)]">LLM Generation</p>
-                                            <p className="font-mono font-bold">
-                                                {benchmarkResult.metrics.llm_generation_ms?.toFixed(2)}ms
-                                            </p>
-                                        </div>
-                                        <div>
-                                            <p className="text-[var(--foreground-secondary)]">Sources</p>
-                                            <p className="font-mono font-bold">
-                                                {benchmarkResult.metrics.source_count}
-                                            </p>
-                                        </div>
+                                ) : (
+                                    <div className="flex items-center gap-2 text-red-400">
+                                        <AlertCircle className="w-5 h-5" />
+                                        <span>{benchmarkResult.error}</span>
                                     </div>
                                 )}
                             </div>
-                        ) : (
-                            <div className="flex items-center gap-2 text-red-400">
-                                <AlertCircle className="w-5 h-5" />
-                                <span>{benchmarkResult.error}</span>
-                            </div>
                         )}
                     </div>
-                )}
-            </div>
 
-            {/* RAGAS Quality Evaluation Section */}
-            <RAGASEvaluationSection />
+                    {/* RAGAS Quality Evaluation Section */}
+                    <RAGASEvaluationSection />
+                </>
+            )}
         </div>
     );
 }

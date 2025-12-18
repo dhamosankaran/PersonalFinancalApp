@@ -45,8 +45,8 @@ class AnalyticsService:
             )
         """)
         
-        # Clear existing data (for simplicity, in production use incremental sync)
-        # self.conn.execute("DELETE FROM transactions")
+        # Clear existing data before full sync (prevents duplicates)
+        self.conn.execute("DELETE FROM transactions")
         
         # Insert transactions
         if transactions:
@@ -114,50 +114,70 @@ class AnalyticsService:
         total = sum(d['amount'] for d in data)
         average = total / len(data) if data else 0
         
-        # Calculate period-over-period change
-        # Compare first half vs second half of the period
+        # Calculate month-over-month change (more meaningful than period blocks)
+        # Compare most recent complete month vs the month before it
         previous_total = 0.0
         period_change = 0.0
+        comparison_type = "month"  # Indicates this is month-over-month
         
-        if len(data) >= 2:
-            half = len(data) // 2
-            current_half = sum(d['amount'] for d in data[:half]) if half > 0 else 0
-            previous_half = sum(d['amount'] for d in data[half:]) if half > 0 else 0
-            previous_total = previous_half
+        # Data is sorted newest first, so:
+        # data[0] = most recent month (may be incomplete)
+        # data[1] = previous complete month
+        # data[2] = month before that
+        if len(data) >= 3:
+            # Skip current (potentially incomplete) month, compare last 2 complete months
+            current_month = data[1]['amount']  # Last complete month
+            previous_month = data[2]['amount']  # Month before that
+            previous_total = previous_month
             
-            if previous_half > 0:
-                period_change = ((current_half - previous_half) / previous_half) * 100
+            if previous_month > 0:
+                period_change = ((current_month - previous_month) / previous_month) * 100
+        elif len(data) >= 2:
+            # If only 2 months, compare them directly
+            current_month = data[0]['amount']
+            previous_month = data[1]['amount']
+            previous_total = previous_month
+            
+            if previous_month > 0:
+                period_change = ((current_month - previous_month) / previous_month) * 100
         
-        # Calculate potential savings based on:
-        # 1. Above-average spending categories that could be reduced
-        # 2. Recurring subscriptions that might be unnecessary
+        # Calculate potential savings based on category benchmarks
+        # Same logic as Savings Optimizer Agent for consistency
         potential_savings = 0.0
         
         if total > 0:
-            # Find discretionary spending above average (simplified calculation)
-            # Look for high-variance merchants (large single purchases that might be avoidable)
+            # Category benchmarks (% of total spending)
+            benchmarks = {
+                "Food & Dining": 10,
+                "Entertainment": 5,
+                "Shopping": 10,
+                "Transportation": 15,
+                "Groceries": 15,
+                "Utilities": 10,
+            }
+            
             savings_query = f"""
-                WITH merchant_stats AS (
-                    SELECT 
-                        merchant,
-                        SUM(amount) as total_amount,
-                        COUNT(*) as transaction_count,
-                        AVG(amount) as avg_amount
-                    FROM transactions
-                    WHERE user_id = ?
-                        AND transaction_date >= CURRENT_DATE - INTERVAL '{months} months'
-                        AND merchant IS NOT NULL
-                        AND merchant != ''
-                    GROUP BY merchant
-                )
                 SELECT 
-                    SUM(CASE WHEN avg_amount > 50 AND transaction_count <= 2 THEN avg_amount * 0.5 ELSE 0 END) as potential
-                FROM merchant_stats
+                    category,
+                    SUM(amount) as total_amount
+                FROM transactions
+                WHERE user_id = ?
+                    AND transaction_date >= CURRENT_DATE - INTERVAL '{months} months'
+                    AND category IS NOT NULL
+                GROUP BY category
             """
             try:
-                savings_result = self.conn.execute(savings_query, [user_id]).fetchone()
-                if savings_result and savings_result[0]:
-                    potential_savings = float(savings_result[0])
+                category_results = self.conn.execute(savings_query, [user_id]).fetchall()
+                for row in category_results:
+                    cat_name = row[0]
+                    cat_amount = float(row[1])
+                    cat_pct = (cat_amount / total * 100) if total > 0 else 0
+                    
+                    if cat_name in benchmarks:
+                        benchmark = benchmarks[cat_name]
+                        # Flag if >50% over benchmark
+                        if cat_pct > benchmark * 1.5:
+                            potential_savings += cat_amount - (total * benchmark / 100)
             except Exception as e:
                 print(f"Error in potential savings query: {e}")
         
@@ -167,6 +187,7 @@ class AnalyticsService:
             "average": average,
             "previous_total": previous_total,
             "period_change": round(period_change, 1),
+            "comparison_type": comparison_type,  # "month" for month-over-month
             "potential_savings": round(potential_savings, 2)
         }
     

@@ -28,9 +28,10 @@ import {
     Zap,
     ArrowRight,
     ArrowDown,
-    Sparkles,
-    ToggleLeft,
-    ToggleRight,
+    Beaker,
+    TrendingUp,
+    Clock,
+    Award,
 } from 'lucide-react';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
@@ -57,6 +58,8 @@ interface Diagnostics {
         embedding_model: string;
         chroma_path: string;
         openai_configured: boolean;
+        gemini_configured: boolean;
+        current_llm_provider: string;
     };
 }
 
@@ -75,19 +78,6 @@ interface DataSample {
     }>;
     error?: string;
     purpose?: string;
-}
-
-// LLM Provider types
-interface ProviderInfo {
-    name: string;
-    available: boolean;
-    active: boolean;
-    model: string;
-}
-
-interface ProvidersResponse {
-    providers: ProviderInfo[];
-    active_provider: string | null;
 }
 
 async function getDiagnostics(): Promise<Diagnostics> {
@@ -126,30 +116,311 @@ async function reprocessDocuments(): Promise<any> {
     return res.json();
 }
 
-async function getProviders(): Promise<ProvidersResponse> {
-    const res = await fetch(`${API_URL}/api/settings/providers`);
-    if (!res.ok) throw new Error('Failed to fetch providers');
+interface EmbeddingResult {
+    provider: string;
+    model: string;
+    dimension: number;
+    embedding_time_ms: number;
+    retrieval_time_ms: number;
+    ragas_scores: {
+        faithfulness: number | null;
+        answer_relevancy: number | null;
+        context_precision: number | null;
+        overall: number | null;
+    };
+    query_count: number;
+}
+
+interface EmbeddingComparison {
+    available: boolean;
+    timestamp?: string;
+    test_config?: {
+        max_transactions: number;
+        num_queries: number;
+        queries: string[];
+    };
+    results?: Record<string, EmbeddingResult>;
+    message?: string;
+}
+
+async function getEmbeddingComparison(): Promise<EmbeddingComparison> {
+    const res = await fetch(`${API_URL}/api/settings/embedding-comparison`);
+    if (!res.ok) throw new Error('Failed to fetch embedding comparison');
     return res.json();
 }
 
-async function switchProvider(provider: string): Promise<{ success: boolean; message: string; active_provider: string; model: string }> {
-    const res = await fetch(`${API_URL}/api/settings/providers/switch`, {
+async function runEmbeddingComparison(): Promise<any> {
+    const res = await fetch(`${API_URL}/api/settings/embedding-comparison/run`, { method: 'POST' });
+    if (!res.ok) throw new Error('Failed to run comparison');
+    return res.json();
+}
+
+// LLM Provider types and API functions
+interface LLMProviderStatus {
+    current_provider: string;
+    providers: {
+        openai: { configured: boolean; model: string; available: boolean };
+        gemini: { configured: boolean; model: string; available: boolean };
+    };
+}
+
+async function getLLMProvider(): Promise<LLMProviderStatus> {
+    const res = await fetch(`${API_URL}/api/settings/llm-provider`);
+    if (!res.ok) throw new Error('Failed to fetch LLM provider');
+    return res.json();
+}
+
+async function setLLMProvider(provider: string): Promise<{ success: boolean; message?: string; error?: string }> {
+    const res = await fetch(`${API_URL}/api/settings/llm-provider`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider }),
+        body: JSON.stringify({ provider })
     });
-    if (!res.ok) {
-        const error = await res.json();
-        throw new Error(error.detail || 'Failed to switch provider');
-    }
+    if (!res.ok) throw new Error('Failed to set LLM provider');
     return res.json();
+}
+
+function ScoreBar({ score, label }: { score: number | null; label: string }) {
+    if (score === null) return <span className="text-xs text-[var(--foreground-secondary)]">N/A</span>;
+    const percentage = score * 100;
+    const color = percentage >= 90 ? 'bg-green-500' : percentage >= 70 ? 'bg-yellow-500' : percentage >= 50 ? 'bg-orange-500' : 'bg-red-500';
+
+    return (
+        <div className="flex items-center gap-2">
+            <div className="flex-1 h-2 bg-[var(--background-secondary)] rounded-full overflow-hidden">
+                <div className={`h-full ${color} transition-all`} style={{ width: `${percentage}%` }} />
+            </div>
+            <span className="text-xs font-medium w-12 text-right">{percentage.toFixed(0)}%</span>
+        </div>
+    );
+}
+
+function EmbeddingsLabTab() {
+    const queryClient = useQueryClient();
+
+    const { data: comparison, isLoading, refetch } = useQuery({
+        queryKey: ['embeddingComparison'],
+        queryFn: getEmbeddingComparison,
+    });
+
+    const runMutation = useMutation({
+        mutationFn: runEmbeddingComparison,
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['embeddingComparison'] });
+        },
+    });
+
+    const getBestProvider = () => {
+        if (!comparison?.results) return null;
+        let best = { provider: '', score: 0 };
+        Object.entries(comparison.results).forEach(([provider, result]) => {
+            const score = result.ragas_scores.overall || 0;
+            if (score > best.score) best = { provider, score };
+        });
+        return best.provider;
+    };
+
+    const providerColors: Record<string, string> = {
+        local: 'from-blue-500 to-blue-600',
+        openai: 'from-green-500 to-green-600',
+        gemini: 'from-purple-500 to-purple-600',
+    };
+
+    return (
+        <div className="space-y-6">
+            {/* Header */}
+            <div className="glass-card p-6">
+                <div className="flex items-center justify-between mb-4">
+                    <div className="flex items-center gap-4">
+                        <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-pink-500 to-rose-600 flex items-center justify-center">
+                            <Beaker className="w-6 h-6 text-white" />
+                        </div>
+                        <div>
+                            <h2 className="text-xl font-bold">Embedding Model Comparison</h2>
+                            <p className="text-sm text-[var(--foreground-secondary)]">
+                                Compare retrieval quality across different embedding models using RAGAS metrics
+                            </p>
+                        </div>
+                    </div>
+                    <div className="flex gap-3">
+                        <button
+                            onClick={() => refetch()}
+                            className="btn-secondary inline-flex items-center gap-2"
+                        >
+                            <RefreshCw className="w-4 h-4" />
+                            Refresh
+                        </button>
+                        <button
+                            onClick={() => runMutation.mutate()}
+                            disabled={runMutation.isPending}
+                            className="btn-primary inline-flex items-center gap-2"
+                        >
+                            <PlayCircle className="w-4 h-4" />
+                            {runMutation.isPending ? 'Running...' : 'Run Test'}
+                        </button>
+                    </div>
+                </div>
+
+                {runMutation.isPending && (
+                    <div className="p-4 rounded-lg bg-blue-500/20 text-blue-400 text-sm flex items-center gap-3">
+                        <div className="spinner" />
+                        Running comparison test... This may take 2-3 minutes.
+                    </div>
+                )}
+            </div>
+
+            {isLoading ? (
+                <div className="flex items-center justify-center py-12">
+                    <div className="spinner" />
+                </div>
+            ) : !comparison?.available ? (
+                <div className="glass-card p-8 text-center">
+                    <Beaker className="w-16 h-16 mx-auto mb-4 text-[var(--foreground-secondary)] opacity-50" />
+                    <h3 className="text-lg font-semibold mb-2">No Comparison Data Yet</h3>
+                    <p className="text-[var(--foreground-secondary)] mb-4 max-w-md mx-auto">
+                        Run the embedding comparison test to compare Local, OpenAI, and Gemini embedding models.
+                    </p>
+                    <button
+                        onClick={() => runMutation.mutate()}
+                        disabled={runMutation.isPending}
+                        className="btn-primary inline-flex items-center gap-2"
+                    >
+                        <PlayCircle className="w-4 h-4" />
+                        {runMutation.isPending ? 'Running...' : 'Run Comparison Test'}
+                    </button>
+                </div>
+            ) : (
+                <>
+                    {/* Test Info */}
+                    {comparison.timestamp && (
+                        <div className="text-sm text-[var(--foreground-secondary)] flex items-center gap-2">
+                            <Clock className="w-4 h-4" />
+                            Last run: {new Date(comparison.timestamp).toLocaleString()}
+                            {comparison.test_config && (
+                                <span className="ml-4">
+                                    • {comparison.test_config.num_queries} queries • {comparison.test_config.max_transactions} transactions
+                                </span>
+                            )}
+                        </div>
+                    )}
+
+                    {/* Provider Cards */}
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        {comparison.results && Object.entries(comparison.results).map(([provider, result]) => {
+                            const isBest = getBestProvider() === provider;
+                            return (
+                                <div key={provider} className={`glass-card p-6 relative ${isBest ? 'ring-2 ring-yellow-500/50' : ''}`}>
+                                    {isBest && (
+                                        <div className="absolute -top-2 -right-2 w-8 h-8 rounded-full bg-yellow-500 flex items-center justify-center">
+                                            <Award className="w-4 h-4 text-black" />
+                                        </div>
+                                    )}
+                                    <div className="flex items-center gap-3 mb-4">
+                                        <div className={`w-10 h-10 rounded-xl bg-gradient-to-br ${providerColors[provider] || 'from-gray-500 to-gray-600'} flex items-center justify-center`}>
+                                            <Cpu className="w-5 h-5 text-white" />
+                                        </div>
+                                        <div>
+                                            <h3 className="font-semibold capitalize">{provider}</h3>
+                                            <p className="text-xs text-[var(--foreground-secondary)] truncate max-w-[180px]" title={result.model}>
+                                                {result.model}
+                                            </p>
+                                        </div>
+                                    </div>
+
+                                    {/* Metrics */}
+                                    <div className="space-y-3">
+                                        <div className="flex justify-between items-center text-sm">
+                                            <span className="text-[var(--foreground-secondary)]">Dimension</span>
+                                            <span className="font-medium">{result.dimension}</span>
+                                        </div>
+                                        <div className="flex justify-between items-center text-sm">
+                                            <span className="text-[var(--foreground-secondary)]">Embedding Time</span>
+                                            <span className="font-medium">{result.embedding_time_ms.toFixed(0)}ms</span>
+                                        </div>
+                                        <div className="flex justify-between items-center text-sm">
+                                            <span className="text-[var(--foreground-secondary)]">Retrieval Time</span>
+                                            <span className="font-medium">{result.retrieval_time_ms.toFixed(0)}ms</span>
+                                        </div>
+                                    </div>
+
+                                    <div className="border-t border-[var(--glass-border)] my-4" />
+
+                                    {/* RAGAS Scores */}
+                                    <h4 className="text-xs font-medium text-[var(--foreground-secondary)] uppercase tracking-wide mb-3">RAGAS Scores</h4>
+                                    <div className="space-y-2">
+                                        <div>
+                                            <div className="flex justify-between text-xs mb-1">
+                                                <span>Faithfulness</span>
+                                            </div>
+                                            <ScoreBar score={result.ragas_scores.faithfulness} label="Faithfulness" />
+                                        </div>
+                                        <div>
+                                            <div className="flex justify-between text-xs mb-1">
+                                                <span>Relevancy</span>
+                                            </div>
+                                            <ScoreBar score={result.ragas_scores.answer_relevancy} label="Relevancy" />
+                                        </div>
+                                        <div>
+                                            <div className="flex justify-between text-xs mb-1">
+                                                <span>Precision</span>
+                                            </div>
+                                            <ScoreBar score={result.ragas_scores.context_precision} label="Precision" />
+                                        </div>
+                                        <div className="pt-2 border-t border-[var(--glass-border)]">
+                                            <div className="flex justify-between text-xs mb-1">
+                                                <span className="font-semibold">Overall</span>
+                                            </div>
+                                            <ScoreBar score={result.ragas_scores.overall} label="Overall" />
+                                        </div>
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+
+                    {/* What This Measures */}
+                    <div className="glass-card p-6">
+                        <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
+                            <Info className="w-5 h-5 text-cyan-400" />
+                            What These Metrics Mean
+                        </h3>
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                            <div className="p-4 rounded-lg bg-[var(--background-secondary)]">
+                                <h4 className="font-medium text-green-400 mb-2">Faithfulness</h4>
+                                <p className="text-xs text-[var(--foreground-secondary)]">
+                                    Are the facts in the answer grounded in the retrieved context? Measures hallucination.
+                                </p>
+                            </div>
+                            <div className="p-4 rounded-lg bg-[var(--background-secondary)]">
+                                <h4 className="font-medium text-blue-400 mb-2">Answer Relevancy</h4>
+                                <p className="text-xs text-[var(--foreground-secondary)]">
+                                    Does the generated answer actually address the question asked?
+                                </p>
+                            </div>
+                            <div className="p-4 rounded-lg bg-[var(--background-secondary)]">
+                                <h4 className="font-medium text-purple-400 mb-2">Context Precision</h4>
+                                <p className="text-xs text-[var(--foreground-secondary)]">
+                                    Are the retrieved documents relevant to answering the question?
+                                </p>
+                            </div>
+                            <div className="p-4 rounded-lg bg-[var(--background-secondary)]">
+                                <h4 className="font-medium text-yellow-400 mb-2">Overall Score</h4>
+                                <p className="text-xs text-[var(--foreground-secondary)]">
+                                    Average of all metrics - higher is better. 90%+ is excellent.
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                </>
+            )}
+        </div>
+    );
 }
 
 export default function SettingsPage() {
-    const [activeTab, setActiveTab] = useState<'overview' | 'database' | 'vector' | 'ai-model' | 'tutorial'>('overview');
+    const [activeTab, setActiveTab] = useState<'overview' | 'database' | 'vector' | 'tutorial' | 'embeddings'>('overview');
     const [expandedItems, setExpandedItems] = useState<Set<number>>(new Set());
     const queryClient = useQueryClient();
-
 
     const { data: diagnostics, isLoading: loadingDiagnostics, refetch: refetchDiagnostics } = useQuery({
         queryKey: ['diagnostics'],
@@ -194,17 +465,17 @@ export default function SettingsPage() {
         },
     });
 
-    // LLM Provider queries
-    const { data: providersData, isLoading: loadingProviders, refetch: refetchProviders } = useQuery({
-        queryKey: ['providers'],
-        queryFn: getProviders,
-        enabled: activeTab === 'ai-model' || activeTab === 'overview',
+    // LLM Provider query and mutation
+    const { data: llmProvider, refetch: refetchLLMProvider } = useQuery({
+        queryKey: ['llmProvider'],
+        queryFn: getLLMProvider,
     });
 
-    const switchProviderMutation = useMutation({
-        mutationFn: switchProvider,
+    const setProviderMutation = useMutation({
+        mutationFn: setLLMProvider,
         onSuccess: () => {
-            queryClient.invalidateQueries({ queryKey: ['providers'] });
+            queryClient.invalidateQueries({ queryKey: ['llmProvider'] });
+            queryClient.invalidateQueries({ queryKey: ['diagnostics'] });
         },
     });
 
@@ -248,12 +519,12 @@ export default function SettingsPage() {
             </div>
 
             {/* Tabs */}
-            <div className="flex gap-2 border-b border-[var(--glass-border)] overflow-x-auto">
+            <div className="flex gap-2 border-b border-[var(--glass-border)]">
                 {[
                     { id: 'overview', label: 'Overview', icon: SettingsIcon },
-                    { id: 'ai-model', label: 'AI Model', icon: Sparkles },
                     { id: 'database', label: 'SQL Database', icon: Table },
                     { id: 'vector', label: 'Vector Store', icon: Layers },
+                    { id: 'embeddings', label: 'Embeddings Lab', icon: Beaker },
                     { id: 'tutorial', label: 'How It Works', icon: GraduationCap },
                 ].map((tab) => (
                     <button
@@ -360,7 +631,7 @@ export default function SettingsPage() {
                                         <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-orange-500 to-orange-600 flex items-center justify-center">
                                             <SettingsIcon className="w-5 h-5 text-white" />
                                         </div>
-                                        <h3 className="font-semibold">Configuration</h3>
+                                        <h3 className="font-semibold">API Configuration</h3>
                                     </div>
                                     <div className="space-y-2 text-sm">
                                         <div className="flex justify-between items-center">
@@ -371,14 +642,120 @@ export default function SettingsPage() {
                                                 <XCircle className="w-4 h-4 text-red-500" />
                                             )}
                                         </div>
+                                        <div className="flex justify-between items-center">
+                                            <span className="text-[var(--foreground-secondary)]">Gemini</span>
+                                            {diagnostics.configuration.gemini_configured ? (
+                                                <CheckCircle className="w-4 h-4 text-green-500" />
+                                            ) : (
+                                                <XCircle className="w-4 h-4 text-red-500" />
+                                            )}
+                                        </div>
                                         <div className="flex justify-between">
-                                            <span className="text-[var(--foreground-secondary)]">Model</span>
-                                            <span className="font-medium text-xs truncate max-w-[120px]" title={diagnostics.configuration.embedding_model}>
+                                            <span className="text-[var(--foreground-secondary)]">Embedding</span>
+                                            <span className="font-medium text-xs truncate max-w-[100px]" title={diagnostics.configuration.embedding_model}>
                                                 {diagnostics.configuration.embedding_model.split('/').pop()}
                                             </span>
                                         </div>
                                     </div>
                                 </div>
+                            </div>
+
+                            {/* LLM Provider Selector */}
+                            <div className="glass-card p-6">
+                                <div className="flex items-center justify-between">
+                                    <div className="flex items-center gap-4">
+                                        <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center">
+                                            <Brain className="w-6 h-6 text-white" />
+                                        </div>
+                                        <div>
+                                            <h2 className="text-xl font-semibold">LLM Provider</h2>
+                                            <p className="text-sm text-[var(--foreground-secondary)]">
+                                                Select the AI model provider for chat and categorization
+                                            </p>
+                                        </div>
+                                    </div>
+
+                                    {/* Toggle Switch */}
+                                    <div className="flex items-center gap-4">
+                                        <div className="flex bg-[var(--background-secondary)] rounded-xl p-1">
+                                            <button
+                                                onClick={() => setProviderMutation.mutate('gemini')}
+                                                disabled={setProviderMutation.isPending}
+                                                className={`px-4 py-2 rounded-lg text-sm font-medium transition-all flex items-center gap-2
+                                                    ${llmProvider?.current_provider === 'gemini'
+                                                        ? 'bg-gradient-to-r from-purple-500 to-purple-600 text-white shadow-lg'
+                                                        : 'text-[var(--foreground-secondary)] hover:text-[var(--foreground)]'
+                                                    }`}
+                                            >
+                                                <span className="w-2 h-2 rounded-full bg-purple-400"></span>
+                                                Gemini
+                                                {llmProvider?.providers.gemini.configured && (
+                                                    <CheckCircle className="w-3 h-3 text-green-400" />
+                                                )}
+                                            </button>
+                                            <button
+                                                onClick={() => setProviderMutation.mutate('openai')}
+                                                disabled={setProviderMutation.isPending}
+                                                className={`px-4 py-2 rounded-lg text-sm font-medium transition-all flex items-center gap-2
+                                                    ${llmProvider?.current_provider === 'openai'
+                                                        ? 'bg-gradient-to-r from-green-500 to-green-600 text-white shadow-lg'
+                                                        : 'text-[var(--foreground-secondary)] hover:text-[var(--foreground)]'
+                                                    }`}
+                                            >
+                                                <span className="w-2 h-2 rounded-full bg-green-400"></span>
+                                                OpenAI
+                                                {llmProvider?.providers.openai.configured && (
+                                                    <CheckCircle className="w-3 h-3 text-green-400" />
+                                                )}
+                                            </button>
+                                        </div>
+                                        {setProviderMutation.isPending && (
+                                            <div className="spinner" />
+                                        )}
+                                    </div>
+                                </div>
+
+                                {/* Provider Details */}
+                                {llmProvider && (
+                                    <div className="mt-4 pt-4 border-t border-[var(--glass-border)] grid grid-cols-2 gap-4 text-sm">
+                                        <div className={`p-3 rounded-lg ${llmProvider.current_provider === 'gemini' ? 'bg-purple-500/10 ring-1 ring-purple-500/30' : 'bg-[var(--background-secondary)]'}`}>
+                                            <div className="flex items-center gap-2 mb-2">
+                                                <span className="font-medium text-purple-400">Gemini</span>
+                                                {llmProvider.current_provider === 'gemini' && (
+                                                    <span className="text-xs bg-purple-500/20 text-purple-400 px-2 py-0.5 rounded-full">Active</span>
+                                                )}
+                                            </div>
+                                            <div className="text-xs text-[var(--foreground-secondary)]">
+                                                Model: {llmProvider.providers.gemini.model}
+                                            </div>
+                                            <div className="text-xs flex items-center gap-1 mt-1">
+                                                Status: {llmProvider.providers.gemini.configured ? (
+                                                    <span className="text-green-400">Configured ✓</span>
+                                                ) : (
+                                                    <span className="text-red-400">Not configured</span>
+                                                )}
+                                            </div>
+                                        </div>
+                                        <div className={`p-3 rounded-lg ${llmProvider.current_provider === 'openai' ? 'bg-green-500/10 ring-1 ring-green-500/30' : 'bg-[var(--background-secondary)]'}`}>
+                                            <div className="flex items-center gap-2 mb-2">
+                                                <span className="font-medium text-green-400">OpenAI</span>
+                                                {llmProvider.current_provider === 'openai' && (
+                                                    <span className="text-xs bg-green-500/20 text-green-400 px-2 py-0.5 rounded-full">Active</span>
+                                                )}
+                                            </div>
+                                            <div className="text-xs text-[var(--foreground-secondary)]">
+                                                Model: {llmProvider.providers.openai.model}
+                                            </div>
+                                            <div className="text-xs flex items-center gap-1 mt-1">
+                                                Status: {llmProvider.providers.openai.configured ? (
+                                                    <span className="text-green-400">Configured ✓</span>
+                                                ) : (
+                                                    <span className="text-red-400">Not configured</span>
+                                                )}
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
                             </div>
 
                             {/* Why Two Databases? Explanation */}
@@ -637,138 +1014,9 @@ export default function SettingsPage() {
                         </div>
                     )}
 
-                    {/* AI Model Tab */}
-                    {activeTab === 'ai-model' && (
-                        <div className="space-y-6">
-                            {/* Model Switch Card */}
-                            <div className="glass-card p-6">
-                                <div className="flex items-center gap-3 mb-6">
-                                    <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-purple-500 to-indigo-600 flex items-center justify-center">
-                                        <Sparkles className="w-6 h-6 text-white" />
-                                    </div>
-                                    <div>
-                                        <h2 className="text-xl font-semibold">AI Model Provider</h2>
-                                        <p className="text-sm text-[var(--foreground-secondary)]">
-                                            Switch between OpenAI and Google Gemini models for AI chat
-                                        </p>
-                                    </div>
-                                </div>
-
-                                {loadingProviders ? (
-                                    <div className="flex items-center justify-center py-8">
-                                        <div className="spinner" />
-                                    </div>
-                                ) : providersData?.providers.length === 0 ? (
-                                    <div className="p-4 rounded-lg bg-yellow-500/20 text-yellow-400">
-                                        <AlertTriangle className="w-5 h-5 inline mr-2" />
-                                        No LLM providers configured. Please set OPENAI_API_KEY or GEMINI_API_KEY in your .env file.
-                                    </div>
-                                ) : (
-                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                        {providersData?.providers.map((provider) => (
-                                            <div
-                                                key={provider.name}
-                                                className={`p-5 rounded-xl border-2 transition-all cursor-pointer ${provider.active
-                                                        ? 'border-[var(--accent)] bg-[var(--accent)]/10'
-                                                        : provider.available
-                                                            ? 'border-[var(--glass-border)] hover:border-[var(--accent)]/50'
-                                                            : 'border-[var(--glass-border)] opacity-50 cursor-not-allowed'
-                                                    }`}
-                                                onClick={() => {
-                                                    if (provider.available && !provider.active && !switchProviderMutation.isPending) {
-                                                        switchProviderMutation.mutate(provider.name);
-                                                    }
-                                                }}
-                                            >
-                                                <div className="flex items-center justify-between mb-3">
-                                                    <div className="flex items-center gap-3">
-                                                        <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${provider.name === 'openai'
-                                                                ? 'bg-gradient-to-br from-emerald-500 to-teal-600'
-                                                                : 'bg-gradient-to-br from-blue-500 to-indigo-600'
-                                                            }`}>
-                                                            <Brain className="w-5 h-5 text-white" />
-                                                        </div>
-                                                        <div>
-                                                            <h3 className="font-semibold capitalize">{provider.name}</h3>
-                                                            <p className="text-xs text-[var(--foreground-secondary)]">
-                                                                {provider.model}
-                                                            </p>
-                                                        </div>
-                                                    </div>
-                                                    {provider.active ? (
-                                                        <div className="flex items-center gap-2 text-green-400">
-                                                            <CheckCircle className="w-5 h-5" />
-                                                            <span className="text-sm font-medium">Active</span>
-                                                        </div>
-                                                    ) : provider.available ? (
-                                                        <button
-                                                            className="btn-secondary text-sm py-1 px-3"
-                                                            disabled={switchProviderMutation.isPending}
-                                                        >
-                                                            {switchProviderMutation.isPending ? 'Switching...' : 'Switch'}
-                                                        </button>
-                                                    ) : (
-                                                        <div className="flex items-center gap-2 text-red-400">
-                                                            <XCircle className="w-5 h-5" />
-                                                            <span className="text-sm">Not Configured</span>
-                                                        </div>
-                                                    )}
-                                                </div>
-                                                <div className="text-xs text-[var(--foreground-secondary)]">
-                                                    {provider.name === 'openai' ? (
-                                                        <p>OpenAI GPT models - excellent for complex reasoning and nuanced responses</p>
-                                                    ) : (
-                                                        <p>Google Gemini - fast, cost-effective with strong multi-modal capabilities</p>
-                                                    )}
-                                                </div>
-                                            </div>
-                                        ))}
-                                    </div>
-                                )}
-
-                                {switchProviderMutation.isSuccess && (
-                                    <div className="mt-4 p-3 rounded-lg bg-green-500/20 text-green-400 text-sm">
-                                        ✓ Successfully switched to {switchProviderMutation.data?.active_provider}!
-                                    </div>
-                                )}
-
-                                {switchProviderMutation.isError && (
-                                    <div className="mt-4 p-3 rounded-lg bg-red-500/20 text-red-400 text-sm">
-                                        ✗ Error: {(switchProviderMutation.error as Error)?.message}
-                                    </div>
-                                )}
-                            </div>
-
-                            {/* MCP Information */}
-                            <div className="glass-card p-6">
-                                <div className="flex items-start gap-4">
-                                    <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-500 to-cyan-600 flex items-center justify-center flex-shrink-0">
-                                        <Info className="w-5 h-5 text-white" />
-                                    </div>
-                                    <div>
-                                        <h3 className="font-semibold mb-2">MCP-Inspired Model Switching</h3>
-                                        <div className="text-sm text-[var(--foreground-secondary)] space-y-3">
-                                            <p>
-                                                This feature is inspired by Anthropic's <strong>Model Context Protocol (MCP)</strong> -
-                                                an open standard for AI applications to connect with external systems and switch between different LLM providers.
-                                            </p>
-                                            <div>
-                                                <span className="font-medium text-green-400">Benefits:</span>
-                                                <ul className="mt-1 ml-4 list-disc space-y-1">
-                                                    <li>Switch models without restarting the app</li>
-                                                    <li>Compare responses from different providers</li>
-                                                    <li>Fall back to an alternative if one provider is unavailable</li>
-                                                    <li>Optimize for cost vs quality based on your needs</li>
-                                                </ul>
-                                            </div>
-                                            <p className="text-xs opacity-75 italic">
-                                                Configure providers by adding OPENAI_API_KEY and/or GEMINI_API_KEY to your .env file.
-                                            </p>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
+                    {/* Embeddings Lab Tab */}
+                    {activeTab === 'embeddings' && (
+                        <EmbeddingsLabTab />
                     )}
 
                     {/* Tutorial Tab */}
@@ -1188,6 +1436,389 @@ export default function SettingsPage() {
                                 <div className="mt-4 p-3 rounded-lg bg-[var(--background)] text-sm">
                                     <span className="text-[var(--foreground-secondary)]">View metrics at: </span>
                                     <a href="/metrics" className="text-cyan-400 hover:underline font-medium">Metrics Dashboard →</a>
+                                </div>
+                            </div>
+
+                            {/* AI Agents (MultiAgent System) */}
+                            <div className="glass-card p-6">
+                                <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
+                                    <Brain className="w-5 h-5 text-violet-400" />
+                                    8. AI Agents - MultiAgent System
+                                </h3>
+                                <p className="text-sm text-[var(--foreground-secondary)] mb-4">
+                                    The app includes 6 specialized AI agents that automatically analyze your finances and provide actionable insights.
+                                    Each agent has a specific focus area and runs independently.
+                                </p>
+
+                                {/* Agent Overview */}
+                                <div className="bg-[var(--background-secondary)] rounded-xl p-6 mb-6">
+                                    <h4 className="font-medium mb-4">Available Agents</h4>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                                        <div className="p-3 rounded-lg bg-[var(--glass-bg)] border border-[var(--glass-border)]">
+                                            <div className="flex items-center gap-2 mb-2">
+                                                <span className="text-2xl">📊</span>
+                                                <h5 className="font-medium text-blue-400">Budget Planner</h5>
+                                            </div>
+                                            <p className="text-xs text-[var(--foreground-secondary)]">
+                                                Analyzes spending patterns and recommends monthly budget allocations using the 50/30/20 rule.
+                                            </p>
+                                        </div>
+
+                                        <div className="p-3 rounded-lg bg-[var(--glass-bg)] border border-[var(--glass-border)]">
+                                            <div className="flex items-center gap-2 mb-2">
+                                                <span className="text-2xl">🔄</span>
+                                                <h5 className="font-medium text-purple-400">Subscription Auditor</h5>
+                                            </div>
+                                            <p className="text-xs text-[var(--foreground-secondary)]">
+                                                Detects recurring charges and identifies unused or duplicate subscriptions for cost savings.
+                                            </p>
+                                        </div>
+
+                                        <div className="p-3 rounded-lg bg-[var(--glass-bg)] border border-[var(--glass-border)]">
+                                            <div className="flex items-center gap-2 mb-2">
+                                                <span className="text-2xl">💰</span>
+                                                <h5 className="font-medium text-green-400">Savings Optimizer</h5>
+                                            </div>
+                                            <p className="text-xs text-[var(--foreground-secondary)]">
+                                                Compares spending to benchmarks and suggests specific areas to reduce expenses.
+                                            </p>
+                                        </div>
+
+                                        <div className="p-3 rounded-lg bg-[var(--glass-bg)] border border-[var(--glass-border)]">
+                                            <div className="flex items-center gap-2 mb-2">
+                                                <span className="text-2xl">🚨</span>
+                                                <h5 className="font-medium text-red-400">Anomaly Detector</h5>
+                                            </div>
+                                            <p className="text-xs text-[var(--foreground-secondary)]">
+                                                Flags unusual transactions using statistical analysis (2+ standard deviations from normal).
+                                            </p>
+                                        </div>
+
+                                        <div className="p-3 rounded-lg bg-[var(--glass-bg)] border border-[var(--glass-border)]">
+                                            <div className="flex items-center gap-2 mb-2">
+                                                <span className="text-2xl">📈</span>
+                                                <h5 className="font-medium text-cyan-400">Spending Forecast</h5>
+                                            </div>
+                                            <p className="text-xs text-[var(--foreground-secondary)]">
+                                                Predicts next month's expenses based on historical patterns and recurring items.
+                                            </p>
+                                        </div>
+
+                                        <div className="p-3 rounded-lg bg-[var(--glass-bg)] border border-[var(--glass-border)]">
+                                            <div className="flex items-center gap-2 mb-2">
+                                                <span className="text-2xl">🎯</span>
+                                                <h5 className="font-medium text-orange-400">Financial Goals</h5>
+                                            </div>
+                                            <p className="text-xs text-[var(--foreground-secondary)]">
+                                                Tracks savings capacity and calculates time-to-goal projections for major objectives.
+                                            </p>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* How It Works */}
+                                <div className="bg-[var(--background-secondary)] rounded-xl p-6 mb-6">
+                                    <h4 className="font-medium mb-4">How The MultiAgent System Works</h4>
+                                    <div className="flex flex-col md:flex-row items-stretch gap-4">
+                                        <div className="flex-1 p-4 rounded-lg bg-[var(--glass-bg)] border border-[var(--glass-border)]">
+                                            <div className="w-8 h-8 rounded-full bg-violet-500/20 text-violet-400 flex items-center justify-center text-sm font-bold mb-2">1</div>
+                                            <h4 className="font-medium mb-1">Agent Selection</h4>
+                                            <p className="text-xs text-[var(--foreground-secondary)]">Choose individual agent or "Run All" for comprehensive analysis</p>
+                                        </div>
+                                        <ArrowRight className="w-6 h-6 text-[var(--foreground-secondary)] self-center hidden md:block" />
+                                        <ArrowDown className="w-6 h-6 text-[var(--foreground-secondary)] self-center md:hidden" />
+
+                                        <div className="flex-1 p-4 rounded-lg bg-[var(--glass-bg)] border border-[var(--glass-border)]">
+                                            <div className="w-8 h-8 rounded-full bg-blue-500/20 text-blue-400 flex items-center justify-center text-sm font-bold mb-2">2</div>
+                                            <h4 className="font-medium mb-1">Data Retrieval</h4>
+                                            <p className="text-xs text-[var(--foreground-secondary)]">Agent fetches relevant data from SQL/Analytics (not Vector DB)</p>
+                                        </div>
+                                        <ArrowRight className="w-6 h-6 text-[var(--foreground-secondary)] self-center hidden md:block" />
+                                        <ArrowDown className="w-6 h-6 text-[var(--foreground-secondary)] self-center md:hidden" />
+
+                                        <div className="flex-1 p-4 rounded-lg bg-[var(--glass-bg)] border border-[var(--glass-border)]">
+                                            <div className="w-8 h-8 rounded-full bg-green-500/20 text-green-400 flex items-center justify-center text-sm font-bold mb-2">3</div>
+                                            <h4 className="font-medium mb-1">Analysis & Insights</h4>
+                                            <p className="text-xs text-[var(--foreground-secondary)]">Agent applies rules + optional LLM to generate insights & recommendations</p>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Architecture */}
+                                <div className="space-y-4">
+                                    <div className="p-4 rounded-lg bg-[var(--background-secondary)]">
+                                        <h4 className="font-medium text-violet-400 mb-2">Agent Architecture</h4>
+                                        <p className="text-sm text-[var(--foreground-secondary)]">
+                                            Built using <strong>LangGraph</strong> for orchestration. Each agent is a standalone class that:
+                                        </p>
+                                        <ul className="text-sm text-[var(--foreground-secondary)] mt-2 space-y-1">
+                                            <li>• Inherits from <code className="text-violet-400">BaseFinanceAgent</code></li>
+                                            <li>• Has access to analytics tools via <code className="text-cyan-400">AgentTools</code></li>
+                                            <li>• Returns structured <code className="text-green-400">AgentResult</code> with insights & recommendations</li>
+                                            <li>• Uses <code className="text-pink-400">LLM (Gemini/OpenAI)</code> for personalized analysis</li>
+                                        </ul>
+                                    </div>
+
+                                    <div className="p-4 rounded-lg bg-[var(--background-secondary)]">
+                                        <h4 className="font-medium text-pink-400 mb-2">LLM Integration</h4>
+                                        <p className="text-sm text-[var(--foreground-secondary)]">
+                                            Each agent uses the LLM via two methods:
+                                        </p>
+                                        <ul className="text-sm text-[var(--foreground-secondary)] mt-2 space-y-1">
+                                            <li>• <code className="text-violet-400">_generate_llm_analysis()</code> - Generates comprehensive AI analysis</li>
+                                            <li>• <code className="text-green-400">_generate_smart_recommendations()</code> - Creates personalized action items</li>
+                                        </ul>
+                                        <div className="mt-3 p-2 rounded bg-pink-500/10 border border-pink-500/20 text-xs text-[var(--foreground-secondary)]">
+                                            The <strong className="text-pink-400">"AI ANALYSIS"</strong> section in results shows the LLM-generated insights
+                                        </div>
+                                    </div>
+
+                                    <div className="p-4 rounded-lg bg-[var(--background-secondary)]">
+                                        <h4 className="font-medium text-cyan-400 mb-2">Orchestrator</h4>
+                                        <p className="text-sm text-[var(--foreground-secondary)]">
+                                            The <strong>AgentOrchestrator</strong> coordinates all agents. When you click "Run All Agents":
+                                        </p>
+                                        <ul className="text-sm text-[var(--foreground-secondary)] mt-2 space-y-1">
+                                            <li>• All 6 agents run <strong>concurrently</strong> using asyncio</li>
+                                            <li>• Each agent queries SQL + calls LLM in parallel</li>
+                                            <li>• Results are aggregated into combined insights</li>
+                                            <li>• Top recommendations are deduplicated and returned</li>
+                                        </ul>
+                                    </div>
+
+                                    <div className="p-4 rounded-lg bg-[var(--background-secondary)]">
+                                        <h4 className="font-medium text-orange-400 mb-2">Key Difference: Agents vs. RAG Chat</h4>
+                                        <div className="grid grid-cols-2 gap-4 mt-3 text-xs">
+                                            <div className="p-3 rounded bg-[var(--glass-bg)]">
+                                                <div className="font-medium text-blue-400 mb-1">AI Chat (RAG)</div>
+                                                <ul className="text-[var(--foreground-secondary)] space-y-1">
+                                                    <li>• Uses Vector DB for semantic search</li>
+                                                    <li>• Retrieves relevant context</li>
+                                                    <li>• LLM generates natural language answer</li>
+                                                    <li>• Open-ended questions</li>
+                                                </ul>
+                                            </div>
+                                            <div className="p-3 rounded bg-[var(--glass-bg)]">
+                                                <div className="font-medium text-violet-400 mb-1">AI Agents</div>
+                                                <ul className="text-[var(--foreground-secondary)] space-y-1">
+                                                    <li>• Uses SQL/DuckDB for structured queries</li>
+                                                    <li>• Rules-based + LLM analysis</li>
+                                                    <li>• Returns structured insights + AI analysis</li>
+                                                    <li>• Automated, task-specific analysis</li>
+                                                </ul>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="mt-4 p-3 rounded-lg bg-[var(--background)] text-sm">
+                                    <span className="text-[var(--foreground-secondary)]">Try the agents at: </span>
+                                    <a href="/agents" className="text-violet-400 hover:underline font-medium">AI Agents Page →</a>
+                                </div>
+                            </div>
+
+                            {/* RAG Architecture Patterns */}
+                            <div className="glass-card p-6">
+                                <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
+                                    <Layers className="w-5 h-5 text-rose-400" />
+                                    9. RAG Architecture Patterns
+                                </h3>
+                                <p className="text-sm text-[var(--foreground-secondary)] mb-4">
+                                    There are several approaches to building RAG systems. Here's why we chose <strong>Standard RAG</strong> for this app.
+                                </p>
+
+                                {/* Pattern Comparison Cards */}
+                                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
+                                    {/* Standard RAG */}
+                                    <div className="p-4 rounded-lg bg-green-500/10 border-2 border-green-500/30 relative">
+                                        <div className="absolute -top-2 -right-2 bg-green-500 text-black text-xs font-bold px-2 py-0.5 rounded-full">
+                                            USED HERE
+                                        </div>
+                                        <h4 className="font-semibold text-green-400 mb-2 flex items-center gap-2">
+                                            <Search className="w-4 h-4" />
+                                            Standard RAG
+                                        </h4>
+                                        <p className="text-xs text-[var(--foreground-secondary)] mb-3">
+                                            Query → Embed → Search → Retrieve Context → LLM Answer
+                                        </p>
+                                        <div className="space-y-1 text-xs">
+                                            <div className="flex items-start gap-2">
+                                                <span className="text-green-400">✓</span>
+                                                <span>Simple and fast</span>
+                                            </div>
+                                            <div className="flex items-start gap-2">
+                                                <span className="text-green-400">✓</span>
+                                                <span>Low latency (~1-2s)</span>
+                                            </div>
+                                            <div className="flex items-start gap-2">
+                                                <span className="text-green-400">✓</span>
+                                                <span>Cost efficient</span>
+                                            </div>
+                                            <div className="flex items-start gap-2">
+                                                <span className="text-green-400">✓</span>
+                                                <span>Perfect for structured data</span>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* GraphRAG */}
+                                    <div className="p-4 rounded-lg bg-[var(--background-secondary)] border border-[var(--glass-border)]">
+                                        <h4 className="font-semibold text-purple-400 mb-2 flex items-center gap-2">
+                                            <Database className="w-4 h-4" />
+                                            GraphRAG
+                                        </h4>
+                                        <p className="text-xs text-[var(--foreground-secondary)] mb-3">
+                                            Build knowledge graph → Community detection → Hierarchical summaries
+                                        </p>
+                                        <div className="space-y-1 text-xs">
+                                            <div className="flex items-start gap-2">
+                                                <span className="text-blue-400">○</span>
+                                                <span>Complex entity relationships</span>
+                                            </div>
+                                            <div className="flex items-start gap-2">
+                                                <span className="text-blue-400">○</span>
+                                                <span>Global understanding queries</span>
+                                            </div>
+                                            <div className="flex items-start gap-2">
+                                                <span className="text-yellow-400">△</span>
+                                                <span>Higher indexing cost</span>
+                                            </div>
+                                            <div className="flex items-start gap-2">
+                                                <span className="text-red-400">✗</span>
+                                                <span>Overkill for simple transactions</span>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* Agentic RAG */}
+                                    <div className="p-4 rounded-lg bg-[var(--background-secondary)] border border-[var(--glass-border)]">
+                                        <h4 className="font-semibold text-cyan-400 mb-2 flex items-center gap-2">
+                                            <Brain className="w-4 h-4" />
+                                            Agentic RAG
+                                        </h4>
+                                        <p className="text-xs text-[var(--foreground-secondary)] mb-3">
+                                            LLM decides tools → Multi-step reasoning → Self-correction
+                                        </p>
+                                        <div className="space-y-1 text-xs">
+                                            <div className="flex items-start gap-2">
+                                                <span className="text-blue-400">○</span>
+                                                <span>Dynamic tool selection</span>
+                                            </div>
+                                            <div className="flex items-start gap-2">
+                                                <span className="text-blue-400">○</span>
+                                                <span>Complex multi-step queries</span>
+                                            </div>
+                                            <div className="flex items-start gap-2">
+                                                <span className="text-yellow-400">△</span>
+                                                <span>Higher latency (5-15s)</span>
+                                            </div>
+                                            <div className="flex items-start gap-2">
+                                                <span className="text-yellow-400">△</span>
+                                                <span>More expensive (multiple LLM calls)</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Why We Chose Standard RAG */}
+                                <div className="bg-[var(--background-secondary)] rounded-xl p-6">
+                                    <h4 className="font-medium mb-4 flex items-center gap-2">
+                                        <Info className="w-4 h-4 text-cyan-400" />
+                                        Why Standard RAG for Personal Finance?
+                                    </h4>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        <div className="p-3 rounded-lg bg-[var(--glass-bg)] border border-[var(--glass-border)]">
+                                            <h5 className="text-sm font-medium text-blue-400 mb-2">📊 Data is Already Structured</h5>
+                                            <p className="text-xs text-[var(--foreground-secondary)]">
+                                                Transaction data has clear schema: date, merchant, amount, category.
+                                                No complex entity relationships to model as a graph.
+                                            </p>
+                                        </div>
+                                        <div className="p-3 rounded-lg bg-[var(--glass-bg)] border border-[var(--glass-border)]">
+                                            <h5 className="text-sm font-medium text-green-400 mb-2">⚡ Aggregation Over Understanding</h5>
+                                            <p className="text-xs text-[var(--foreground-secondary)]">
+                                                Finance queries need sums, averages, and filters—perfect for SQL + semantic search.
+                                                Not "global insight" queries that need GraphRAG.
+                                            </p>
+                                        </div>
+                                        <div className="p-3 rounded-lg bg-[var(--glass-bg)] border border-[var(--glass-border)]">
+                                            <h5 className="text-sm font-medium text-purple-400 mb-2">💰 Cost Efficiency</h5>
+                                            <p className="text-xs text-[var(--foreground-secondary)]">
+                                                Single LLM call per query. Agentic RAG would make 3-5 calls for tool selection and iteration.
+                                                Local embeddings keep costs near zero.
+                                            </p>
+                                        </div>
+                                        <div className="p-3 rounded-lg bg-[var(--glass-bg)] border border-[var(--glass-border)]">
+                                            <h5 className="text-sm font-medium text-orange-400 mb-2">🚀 Speed Matters</h5>
+                                            <p className="text-xs text-[var(--foreground-secondary)]">
+                                                1-2 second response time vs 5-15 seconds for agentic systems.
+                                                Users expect fast answers for simple spending queries.
+                                            </p>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* When To Consider Other Patterns */}
+                                <div className="mt-4 p-4 rounded-lg bg-purple-500/10 border border-purple-500/20">
+                                    <h4 className="text-sm font-medium text-purple-400 mb-2">🔮 When You&apos;d Want Different Patterns</h4>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs text-[var(--foreground-secondary)]">
+                                        <div>
+                                            <span className="font-medium text-purple-400">GraphRAG:</span>
+                                            <ul className="mt-1 space-y-1">
+                                                <li>• Analyzing financial news + company relationships</li>
+                                                <li>• Connecting market trends across documents</li>
+                                                <li>• Multi-hop queries (&quot;Which companies in my portfolio are connected to X?&quot;)</li>
+                                            </ul>
+                                        </div>
+                                        <div>
+                                            <span className="font-medium text-cyan-400">Agentic RAG:</span>
+                                            <ul className="mt-1 space-y-1">
+                                                <li>• Complex financial planning with external APIs</li>
+                                                <li>• Self-correcting analysis with multiple data sources</li>
+                                                <li>• Multi-step reasoning (&quot;Optimize my portfolio, then rebalance&quot;)</li>
+                                            </ul>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Architecture Decision Summary */}
+                                <div className="mt-4 overflow-x-auto">
+                                    <table className="w-full text-xs">
+                                        <thead>
+                                            <tr className="border-b border-[var(--glass-border)]">
+                                                <th className="text-left py-2 px-3 text-[var(--foreground-secondary)]">Aspect</th>
+                                                <th className="text-left py-2 px-3 text-green-400">Standard RAG</th>
+                                                <th className="text-left py-2 px-3 text-purple-400">GraphRAG</th>
+                                                <th className="text-left py-2 px-3 text-cyan-400">Agentic RAG</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-[var(--glass-border)]">
+                                            <tr>
+                                                <td className="py-2 px-3">Latency</td>
+                                                <td className="py-2 px-3 text-green-400">1-2s ✓</td>
+                                                <td className="py-2 px-3">2-5s</td>
+                                                <td className="py-2 px-3 text-yellow-400">5-15s</td>
+                                            </tr>
+                                            <tr>
+                                                <td className="py-2 px-3">LLM Calls</td>
+                                                <td className="py-2 px-3 text-green-400">1 ✓</td>
+                                                <td className="py-2 px-3">1</td>
+                                                <td className="py-2 px-3 text-yellow-400">3-5</td>
+                                            </tr>
+                                            <tr>
+                                                <td className="py-2 px-3">Complexity</td>
+                                                <td className="py-2 px-3 text-green-400">Low ✓</td>
+                                                <td className="py-2 px-3 text-yellow-400">High</td>
+                                                <td className="py-2 px-3 text-yellow-400">High</td>
+                                            </tr>
+                                            <tr>
+                                                <td className="py-2 px-3">Best For</td>
+                                                <td className="py-2 px-3">Structured data</td>
+                                                <td className="py-2 px-3">Linked documents</td>
+                                                <td className="py-2 px-3">Multi-tool workflows</td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
                                 </div>
                             </div>
                         </div>

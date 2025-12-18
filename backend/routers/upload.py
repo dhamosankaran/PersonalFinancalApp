@@ -1,6 +1,6 @@
 """Upload router for handling file uploads."""
 
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
+from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import List
 import os
@@ -24,6 +24,7 @@ categorizer = Categorizer()
 async def upload_file(
     file: UploadFile = File(...),
     user_email: str = "default@example.com",  # Simplified auth for now
+    extraction_method: str = Query("pdfplumber", description="Extraction method: 'pdfplumber' or 'llm'"),
     db: Session = Depends(get_db)
 ):
     """
@@ -65,7 +66,7 @@ async def upload_file(
     # Process file in background (for now, do it synchronously)
     try:
         if file_extension == 'pdf':
-            extracted_transactions = await document_processor.process_pdf(file_path)
+            extracted_transactions = await document_processor.process_pdf(file_path, extraction_method)
         else:
             extracted_transactions = await document_processor.process_csv(file_path)
         
@@ -131,6 +132,7 @@ async def upload_file(
 async def upload_files_batch(
     files: List[UploadFile] = File(...),
     user_email: str = "default@example.com",
+    extraction_method: str = Query("pdfplumber", description="Extraction method: 'pdfplumber' or 'llm'"),
     db: Session = Depends(get_db)
 ):
     """
@@ -151,6 +153,7 @@ async def upload_files_batch(
         "skipped": 0,
         "failed": 0,
         "total_transactions": 0,
+        "extraction_method": extraction_method,
         "files": []
     }
     
@@ -217,7 +220,7 @@ async def upload_files_batch(
             
             # Process file
             if file_extension == 'pdf':
-                extracted_transactions = await document_processor.process_pdf(file_path)
+                extracted_transactions = await document_processor.process_pdf(file_path, extraction_method)
             else:
                 extracted_transactions = await document_processor.process_csv(file_path)
             
